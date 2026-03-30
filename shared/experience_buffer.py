@@ -96,7 +96,7 @@ class ExperienceBuffer:
         self.buffer: deque = deque(maxlen=capacity)
         
         # 优先级堆（如果启用）
-        self.priority_heap: List[Tuple[float, int, Experience]] = []
+        self.priority_heap: List[Tuple[float, int]] = []  # (priority, idx)
         
         # 统计
         self.stats = {
@@ -133,7 +133,7 @@ class ExperienceBuffer:
             idx = len(self.buffer) - 1
             heapq.heappush(
                 self.priority_heap,
-                (-experience.priority, idx, experience)
+                (-experience.priority, idx)
             )
         
         self.stats['total_added'] += 1
@@ -143,7 +143,7 @@ class ExperienceBuffer:
         """批量添加经验"""
         added = 0
         for exp in experiences:
-            if self.add(exp):
+            if self.add(exp, check_duplicate=False):
                 added += 1
         return added
     
@@ -178,9 +178,10 @@ class ExperienceBuffer:
                 if not self.priority_heap:
                     break
                 
-                priority, idx, exp = heapq.heappop(self.priority_heap)
+                priority, idx = heapq.heappop(self.priority_heap)
+                exp = self.buffer[idx]
                 samples.append(exp)
-                temp_heap.append((priority, idx, exp))
+                temp_heap.append((priority, idx))
             
             # 放回堆中
             for item in temp_heap:
@@ -279,9 +280,8 @@ class ExperienceBuffer:
                 idx = len(self.buffer) - 1
                 heapq.heappush(
                     self.priority_heap,
-                    (-exp.priority, idx, exp)
+                    (-exp.priority, idx)
                 )
-        
         self.stats.update(data.get('stats', {}))
 
 
@@ -309,8 +309,7 @@ class PrioritizedExperienceBuffer(ExperienceBuffer):
     def add(self, experience: Experience, check_duplicate: bool = True) -> bool:
         """添加经验（自动设置优先级）"""
         experience.priority = self.max_priority
-        return super().add(experience, check_duplicate)
-    
+        return super().add(experience, check_duplicate)    
     def sample_with_weights(
         self,
         batch_size: int

@@ -277,7 +277,7 @@ class GAE:
         """获取统计信息"""
         return {
             **self.stats,
-            'value_function_params': self.value_function.weights.shape[0],
+            'value_function_params': len(self.value_function.weights),
         }
 
 
@@ -302,7 +302,7 @@ def compute_gae(
         Tuple[List[float], List[float]]: (advantages, returns)
     """
     gae = GAE(GAEConfig(gamma=gamma, lam=lam, normalize=False))
-    return gae.compute_advantages(rewards, values=[], states=[], dones=dones)
+    return gae.compute_advantages(rewards, states=[], dones=dones, values=values)
 
 
 class GAEWithBaseline(GAE):

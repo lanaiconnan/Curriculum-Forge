@@ -32,6 +32,9 @@ except ImportError:
             m = sum(arr) / len(arr)
             return (sum((x-m)**2 for x in arr) / len(arr)) ** 0.5
         @staticmethod
+        def sum(arr):
+            return sum(arr)
+        @staticmethod
         def exp(x):
             import math
             return math.exp(x)
@@ -441,7 +444,7 @@ class GRPO:
             ref_probs = self.ref_policy.get_action_probs(state)
             
             # KL 散度
-            kl = np.sum(probs * (np.log(probs + 1e-10) - np.log(ref_probs + 1e-10)))
+            kl = sum(p * (math.log(p + 1e-10) - math.log(ref_probs[i] + 1e-10)) for i, p in enumerate(probs))
             kl_values.append(kl)
         
         return float(np.mean(kl_values)) if kl_values else 0.0
