@@ -62,6 +62,44 @@ Agent A (Producer/Reviewer)  ←→  Agent B (Learner)
 - `protocols/producer_reviewer/feedback_loop.py` — 反馈追踪 + 模式分析
 - `protocols/integration.py` — 与现有 AgentA/B/GRPO 集成
 
+### 1.4 Expert Pool 协议（v1.2 新增）
+
+基于 Harness 的 Expert Pool 架构，动态选择最合适的训练专家：
+
+```
+FeedbackLoop/Analyst → LearnerState
+         ↓
+    ExpertSelector.score(experts)
+         ↓
+    Selected Expert → Specialized TrainingEnvironment
+         ↓
+    Producer-Reviewer Loop
+```
+
+**核心组件**：
+- `protocols/expert_pool/pool.py` — 专家注册表
+- `protocols/expert_pool/selector.py` — 动态选择算法
+- `protocols/expert_pool/experts.py` — 6 种专业化专家
+- `protocols/expert_pool/integration.py` — 与 FeedbackLoop/Producer-Reviewer 集成
+
+**选择策略**：
+| 策略 | 说明 |
+|------|------|
+| `weak_area_first` | 优先匹配学习者薄弱领域 |
+| `performance_based` | 基于历史成功率 |
+| `exploration` | 探索未使用的专家 |
+| `hybrid` | 综合以上因素（默认）|
+
+**6 种训练专家**：
+| 专家 | 专注领域 | 适合阶段 |
+|------|---------|---------|
+| ToolMasteryExpert | 单工具熟练度 | Beginner |
+| ErrorRecoveryExpert | 错误处理与恢复 | Intermediate |
+| OptimizationExpert | 性能优化 | Advanced |
+| MultiToolExpert | 多工具协作 | Intermediate |
+| EdgeCaseExpert | 边界情况处理 | Advanced |
+| CodeReviewExpert | 代码审查与质量 | Intermediate |
+
 ---
 
 ## 2. Agent A 职责
@@ -371,6 +409,20 @@ main.py               # 完整训练循环
 ---
 
 ## 11. 变更日志
+
+### v1.2 (2026-03-31)
+- 新增 Expert Pool 协议（Harness 架构模式）
+- 新增 protocols/expert_pool/ 模块：
+  - pool.py: 专家注册表和管理
+  - selector.py: 基于状态的动态选择算法
+  - experts.py: 6 种专业化训练专家实现
+  - integration.py: 与 FeedbackLoop/Producer-Reviewer 集成
+- 核心功能：
+  - 动态选择最合适的训练专家（基于 weak_areas）
+  - 4 种选择策略：weak_area_first / performance_based / exploration / hybrid
+  - ε-greedy 探索机制（避免局部最优）
+  - 6 种专家类型：ToolMastery, ErrorRecovery, Optimization, MultiTool, EdgeCase, CodeReview
+- 测试：18 个新单元测试，总测试 175 个通过
 
 ### v1.1 (2026-03-31)
 - 新增 Producer-Reviewer 协作协议（参考 Harness 架构）
