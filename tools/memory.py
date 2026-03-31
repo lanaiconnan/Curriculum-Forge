@@ -333,6 +333,171 @@ class RecallMemory:
         ]
 
 
+@dataclass
+class BufferWindowMemory:
+    """
+    固定窗口记忆（来自 Flowise 灵感）
+    
+    特点：
+    - 保留最近 K 条消息
+    - 自动丢弃旧消息
+    - 适用于对话场景
+    """
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    window_size: int = 10                          # 窗口大小
+    
+    def __post_init__(self):
+        # window_size 至少为 1
+        self.window_size = max(1, self.window_size)
+    
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        metadata: Dict[str, Any] = None
+    ):
+        """添加消息，自动维护窗口大小"""
+        self.messages.append({
+            'role': role,
+            'content': content,
+            'timestamp': datetime.now().isoformat(),
+            'metadata': metadata or {},
+        })
+        
+        # 超过窗口大小时移除最旧的消息
+        while len(self.messages) > self.window_size:
+            self.messages.pop(0)
+    
+    def get_context(self) -> str:
+        """获取窗口内的对话上下文"""
+        if not self.messages:
+            return ""
+        
+        lines = ["=== Recent Conversation ==="]
+        for msg in self.messages:
+            role = msg['role'].upper()
+            content = msg['content'][:200]  # 截断长内容
+            lines.append(f"{role}: {content}")
+        
+        return "\n".join(lines)
+    
+    def get_recent(self, n: int = None) -> List[Dict[str, Any]]:
+        """获取最近的 n 条消息"""
+        if n is None:
+            n = self.window_size
+        return self.messages[-n:] if n > 0 else []
+    
+    def clear(self):
+        """清空窗口"""
+        self.messages.clear()
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取状态"""
+        return {
+            'window_size': self.window_size,
+            'current_messages': len(self.messages),
+            'utilization': len(self.messages) / self.window_size if self.window_size > 0 else 0,
+        }
+
+
+@dataclass
+class ConversationSummaryMemory:
+    """
+    对话摘要记忆（来自 Flowise 灵感）
+    
+    特点：
+    - 自动生成对话摘要
+    - 保留关键信息
+    - 节省上下文空间
+    """
+    summary: str = ""                               # 当前摘要
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    max_messages_before_summarize: int = 20          # 多少消息后生成摘要
+    summarized_count: int = 0                        # 已摘要的消息数
+    
+    def __post_init__(self):
+        self.max_messages_before_summarize = max(1, self.max_messages_before_summarize)
+    
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        metadata: Dict[str, Any] = None
+    ):
+        """添加消息，达到阈值时自动生成摘要"""
+        self.messages.append({
+            'role': role,
+            'content': content,
+            'timestamp': datetime.now().isoformat(),
+            'metadata': metadata or {},
+        })
+        
+        # 达到阈值时生成摘要
+        if len(self.messages) >= self.max_messages_before_summarize:
+            self._summarize()
+    
+    def _summarize(self):
+        """生成摘要（简化版，可扩展为 LLM 调用）"""
+        if not self.messages:
+            return
+        
+        # 简单摘要策略：提取关键信息
+        total_chars = sum(len(m['content']) for m in self.messages)
+        
+        # 统计对话角色分布
+        role_counts = {}
+        for msg in self.messages:
+            role = msg['role']
+            role_counts[role] = role_counts.get(role, 0) + 1
+        
+        # 生成摘要
+        self.summary = f"""[摘要] 共 {len(self.messages)} 条消息 ({total_chars} 字符)
+角色分布: {role_counts}
+时间范围: {self.messages[0]['timestamp'][:19]} ~ {self.messages[-1]['timestamp'][:19]}
+
+关键内容预览:
+{self.messages[-1]['content'][:200]}
+"""
+        
+        # 清空已摘要的消息，保留摘要
+        self.summarized_count += len(self.messages)
+        self.messages.clear()
+    
+    def get_context(self) -> str:
+        """获取记忆上下文（摘要 + 最近消息）"""
+        parts = []
+        
+        if self.summary:
+            parts.append(self.summary)
+        
+        if self.messages:
+            parts.append("=== Recent Messages ===")
+            for msg in self.messages:
+                role = msg['role'].upper()
+                content = msg['content'][:150]
+                parts.append(f"{role}: {content}")
+        
+        return "\n".join(parts) if parts else ""
+    
+    def force_summarize(self):
+        """强制生成摘要"""
+        self._summarize()
+    
+    def clear(self):
+        """清空摘要和消息"""
+        self.summary = ""
+        self.messages.clear()
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取状态"""
+        return {
+            'summary_length': len(self.summary),
+            'pending_messages': len(self.messages),
+            'total_summarized': self.summarized_count,
+            'next_summarize_at': self.max_messages_before_summarize,
+        }
+
+
 class MemoryManager:
     """
     记忆管理器
@@ -363,6 +528,12 @@ class MemoryManager:
         self.core_memory = CoreMemory()
         self.archival_memory = ArchivalMemory()
         self.recall_memory = RecallMemory()
+        
+        # 新增：固定窗口记忆（来自 Flowise 灵感）
+        self.buffer_window_memory = BufferWindowMemory(window_size=10)
+        
+        # 新增：对话摘要记忆（来自 Flowise 灵感）
+        self.conversation_summary_memory = ConversationSummaryMemory(max_messages_before_summarize=20)
         
         # 初始化默认块
         self._init_default_blocks()
@@ -628,4 +799,6 @@ class MemoryManager:
                 'messages': len(self.recall_memory.messages),
                 'max_messages': self.recall_memory.max_messages,
             },
+            'buffer_window_memory': self.buffer_window_memory.get_status(),
+            'conversation_summary_memory': self.conversation_summary_memory.get_status(),
         }

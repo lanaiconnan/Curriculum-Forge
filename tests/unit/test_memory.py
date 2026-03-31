@@ -422,6 +422,11 @@ class TestMemoryManager:
         assert 'core_memory' in status
         assert 'archival_memory' in status
         assert 'recall_memory' in status
+        # 新增的记忆类型
+        assert 'buffer_window_memory' in status
+        assert 'conversation_summary_memory' in status
+        assert status['buffer_window_memory']['window_size'] == 10
+        assert status['conversation_summary_memory']['next_summarize_at'] == 20
 
 
 class TestMemoryIntegration:
