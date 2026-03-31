@@ -1,8 +1,8 @@
 # Curriculum-Forge 共享工作手册
 
 > 基于 autoresearch 的 program.md 设计理念
-> 版本：v1.0
-> 更新：2026-03-29
+> 版本：v1.1
+> 更新：2026-03-31
 
 ---
 
@@ -39,6 +39,28 @@ RL 训练器
 - GRPO 强化学习
 - 三阶段课程学习
 - 细粒度奖励设计
+- **Producer-Reviewer 协议**（新增 v1.1）
+
+### 1.3 Producer-Reviewer 协议（v1.1 新增）
+
+参考 Harness 的架构模式，新增 Producer-Reviewer 协作协议：
+
+```
+Agent A (Producer/Reviewer)  ←→  Agent B (Learner)
+         ↓                              ↓
+    生成任务 + 评审质量          执行任务 + 接收反馈
+         ↓                              ↓
+    Accept/Revise/Reject         迭代改进
+         ↓
+    GRPO 奖励计算
+```
+
+**核心组件**：
+- `protocols/producer_reviewer/protocol.py` — 核心协议定义
+- `protocols/producer_reviewer/producer.py` — 任务生成 + 渐进披露
+- `protocols/producer_reviewer/reviewer.py` — 质量评审（LLM/Heuristic）
+- `protocols/producer_reviewer/feedback_loop.py` — 反馈追踪 + 模式分析
+- `protocols/integration.py` — 与现有 AgentA/B/GRPO 集成
 
 ---
 
@@ -54,7 +76,27 @@ RL 训练器
 5. 配置奖励尺度
 ```
 
-### 2.2 约束
+### 2.2 Producer-Reviewer 模式（扩展任务）
+
+当启用 Producer-Reviewer 协议时，Agent A 额外承担评审职责：
+
+```
+1. Producer：生成任务 + 渐进式上下文披露
+2. Reviewer：评审 Agent B 输出质量
+3. 决策：Accept / Revise / Reject
+4. 反馈：将评审结果转为 GRPO 奖励
+```
+
+**质量评审维度**：
+| 维度 | 阈值 | 说明 |
+|------|------|------|
+| FORMAT | 0.8 | 输出格式正确 |
+| COMPLETENESS | 0.7 | 所有需求满足 |
+| ACCURACY | 0.75 | 技术正确性 |
+| PERFORMANCE | 0.7 | 性能达标 |
+| STYLE | 0.6 | 代码风格 |
+
+### 2.3 约束
 
 ```
 ✅ 能做什么：
@@ -62,6 +104,7 @@ RL 训练器
 ✅ 修改 agent_a/generator.py
 ✅ 调整环境配置
 ✅ 配置奖励尺度
+✅ 使用 Producer-Reviewer 协议
 
 ❌ 不能做什么：
 ❌ 不能修改 Agent B 的代码
@@ -328,6 +371,16 @@ main.py               # 完整训练循环
 ---
 
 ## 11. 变更日志
+
+### v1.1 (2026-03-31)
+- 新增 Producer-Reviewer 协作协议（参考 Harness 架构）
+- 新增 protocols/producer_reviewer/ 模块（protocol/producer/reviewer/feedback_loop）
+- 新增 protocols/integration.py 集成层
+- Agent A 扩展评审职责（5 维度质量评估）
+- 支持渐进式上下文披露（失败→更多 hints）
+- 支持 Revise 迭代循环（最多 3 轮）
+- 反馈模式分析（FeedbackLoop）
+- 与 GRPO/ExperienceBuffer 无缝集成
 
 ### v1.0 (2026-03-29)
 - 初始版本

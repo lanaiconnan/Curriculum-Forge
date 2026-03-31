@@ -152,6 +152,35 @@ This project implements ideas from several research papers:
 
 ---
 
+## 🔄 Producer-Reviewer Protocol (v1.1)
+
+Based on [Harness](https://github.com/revfactory/harness)'s architecture patterns, a structured collaboration loop between Agent A and Agent B:
+
+```python
+from protocols.integration import ProducerReviewerIntegration
+
+integration = ProducerReviewerIntegration(
+    agent_a=agent_a,
+    agent_b=agent_b,
+    trainer=trainer,
+    experience_buffer=buffer,
+)
+
+result = integration.run_episode(
+    stage="intermediate",
+    objectives=["Optimize performance", "Reduce memory"],
+)
+```
+
+**Key features:**
+- **Iterative Review Loop**: Agent A reviews Agent B's output before accepting
+- **5 Quality Gates**: Format, Completeness, Accuracy, Performance, Style
+- **Progressive Disclosure**: More hints revealed after failed attempts
+- **GRPO Integration**: Review scores directly feed into reward calculation
+- **Feedback Pattern Analysis**: Tracks recurring issues for improvement
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
