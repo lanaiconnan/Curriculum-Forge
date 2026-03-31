@@ -100,6 +100,42 @@ FeedbackLoop/Analyst → LearnerState
 | EdgeCaseExpert | 边界情况处理 | Advanced |
 | CodeReviewExpert | 代码审查与质量 | Intermediate |
 
+### 1.5 Progressive Disclosure 协议（v1.3 新增）
+
+细粒度难度控制，突破固定 3 阶段限制：
+
+```
+PerformanceSignal (score, time, errors, tool_calls)
+         ↓
+DifficultyController.adjust()
+         ↓
+DifficultyDimensions (complexity, constraints, context, tools, scope)
+         ↓
+ContextDiscloser.compute_disclosure()
+         ↓
+TaskConfig (hints, examples, scaffold, constraints)
+```
+
+**核心组件**：
+- `protocols/progressive_disclosure/controller.py` — 多维难度控制器
+- `protocols/progressive_disclosure/disclosure.py` — 渐进式上下文披露
+- `protocols/progressive_disclosure/task_config.py` — 任务配置构建器
+- `protocols/progressive_disclosure/integration.py` — 与 ExpertPool 集成
+
+**难度维度**：
+| 维度 | 说明 |
+|------|------|
+| complexity | 任务复杂度 |
+| constraints | 时间/工具约束强度 |
+| context | 上下文丰富度（低 = 更多 hints） |
+| tools | 工具使用要求 |
+| scope | 任务范围/广度 |
+
+**渐进披露规则**：
+- 低 context_difficulty（0.2）→ 大量 hints + examples
+- 高 context_difficulty（0.8）→ 最小上下文
+- 根据 round_num 和 score 动态调整
+
 ---
 
 ## 2. Agent A 职责
@@ -409,6 +445,21 @@ main.py               # 完整训练循环
 ---
 
 ## 11. 变更日志
+
+### v1.3 (2026-03-31)
+- 新增 Progressive Disclosure 协议（细粒度难度控制）
+- 新增 protocols/progressive_disclosure/ 模块：
+  - controller.py: 多维难度控制器（complexity/constraints/context/tools/scope）
+  - disclosure.py: 渐进式上下文披露（hints/examples/scaffold/documentation）
+  - task_config.py: 任务配置构建器 + TaskConfig
+  - integration.py: 与 ExpertPool/DifficultyController 集成
+- 核心功能：
+  - 连续难度值（0.0-1.0，非固定 3 阶段）
+  - 多维度独立调整（每个维度独立控制）
+  - 基于实时性能信号动态调整
+  - 渐进式上下文披露（低难度 = 更多 hints）
+  - 支持 ε-greedy 探索 + 趋势分析
+- 测试：19 个新单元测试，总测试 194 个通过
 
 ### v1.2 (2026-03-31)
 - 新增 Expert Pool 协议（Harness 架构模式）
