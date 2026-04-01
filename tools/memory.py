@@ -279,15 +279,27 @@ class ArchivalMemory:
 @dataclass
 class RecallMemory:
     """
-    回忆记忆
+    回忆记忆（来自 Letta + Claude Code 灵感）
     
     来自 Letta 的设计：
     - 存储对话历史
     - 支持时间范围查询
     - 支持关键词搜索
+    
+    来自 Claude Code 灵感：
+    - 自动摘要（周期性）
+    - 初始化状态追踪
+    - Token 计数
     """
     messages: List[Dict[str, Any]] = field(default_factory=list)
     max_messages: int = 1000
+    
+    # Claude Code 风格的配置
+    is_initialized: bool = False                     # 初始化状态
+    auto_summarize_threshold: int = 50               # 自动摘要阈值
+    summarized_count: int = 0                        # 已摘要消息数
+    last_summarized_index: int = -1                  # 上次摘要位置
+    extraction_token_count: int = 0                  # 摘要 token 计数
     
     def add_message(
         self,
@@ -296,8 +308,13 @@ class RecallMemory:
         metadata: Dict[str, Any] = None
     ):
         """添加消息"""
+        # 检查是否需要初始化
+        if not self.is_initialized and len(self.messages) >= 5:
+            self.is_initialized = True
+        
         if len(self.messages) >= self.max_messages:
-            # 移除最旧的消息
+            # 移除最旧的消息前，先检查是否需要摘要
+            self._maybe_summarize()
             self.messages.pop(0)
         
         self.messages.append({
@@ -306,6 +323,111 @@ class RecallMemory:
             'timestamp': datetime.now().isoformat(),
             'metadata': metadata or {},
         })
+        
+        # 达到阈值时自动摘要（Claude Code 风格）
+        if len(self.messages) >= self.auto_summarize_threshold:
+            self._maybe_summarize()
+    
+    def _maybe_summarize(self):
+        """
+        条件性摘要（Claude Code 风格）
+        
+        当消息达到阈值时，提取关键信息并压缩
+        """
+        if len(self.messages) <= self.last_summarized_index + 1:
+            return
+        
+        # 计算待摘要的消息
+        pending_count = len(self.messages) - self.last_summarized_index - 1
+        if pending_count < 10:  # 至少 10 条消息才摘要
+            return
+        
+        # 简单摘要：提取关键信息
+        new_summary = self._extract_summary(
+            self.messages[self.last_summarized_index + 1:]
+        )
+        
+        # 更新统计
+        self.summarized_count += pending_count
+        self.last_summarized_index = len(self.messages) - 1
+        
+        # 记录 token 估计
+        self.extraction_token_count += len(new_summary) // 4
+    
+    def _extract_summary(self, messages: List[Dict]) -> str:
+        """
+        提取摘要（简化版）
+        
+        在生产环境中，这里可以接入 LLM 进行更智能的摘要
+        """
+        if not messages:
+            return ""
+        
+        # 统计信息
+        roles = {}
+        total_chars = 0
+        for msg in messages:
+            role = msg.get('role', 'unknown')
+            roles[role] = roles.get(role, 0) + 1
+            total_chars += len(msg.get('content', ''))
+        
+        # 生成摘要
+        summary = f"[摘要] 最近 {len(messages)} 条消息 ({total_chars} 字符)\n"
+        summary += f"角色分布: {roles}\n"
+        
+        # 添加最近一条消息的预览
+        if messages:
+            last_msg = messages[-1].get('content', '')[:100]
+            summary += f"\n最新: {last_msg}..."
+        
+        return summary
+    
+    def force_summarize(self):
+        """强制摘要所有未摘要的消息"""
+        if self.last_summarized_index < len(self.messages) - 1:
+            self._maybe_summarize()
+    
+    def get_token_count(self) -> int:
+        """获取消息的 token 估计"""
+        total = 0
+        for msg in self.messages:
+            content = msg.get('content', '')
+            # 简单估算：约 4 字符 = 1 token
+            total += len(content) // 4
+        return total
+    
+    def is_initialized_check(self) -> bool:
+        """检查是否已初始化"""
+        return self.is_initialized
+    
+    def get_extraction_stats(self) -> Dict[str, Any]:
+        """获取摘要统计"""
+        return {
+            'is_initialized': self.is_initialized,
+            'total_messages': len(self.messages),
+            'summarized_count': self.summarized_count,
+            'last_summarized_index': self.last_summarized_index,
+            'extraction_token_count': self.extraction_token_count,
+            'auto_summarize_threshold': self.auto_summarize_threshold,
+        }
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取状态（Claude Code 风格）"""
+        return {
+            'messages_count': len(self.messages),
+            'is_initialized': self.is_initialized,
+            'summarized_count': self.summarized_count,
+            'token_count': self.get_token_count(),
+            'max_messages': self.max_messages,
+        }
+    
+    def reset_memory(self):
+        """重置记忆（Claude Code 风格）"""
+        self.messages.clear()
+        self.is_initialized = False
+        self.summarized_count = 0
+        self.last_summarized_index = -1
+        self.extraction_token_count = 0
     
     def get_recent(self, n: int = 10) -> List[Dict[str, Any]]:
         """获取最近的 n 条消息"""
