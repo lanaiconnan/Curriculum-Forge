@@ -170,7 +170,8 @@ class TestSupervisor:
     
     @pytest.fixture
     def supervisor(self):
-        return Supervisor()
+        # 启用 Supervisor 以运行测试
+        return Supervisor(enabled=True)
     
     def test_initialization(self, supervisor):
         status = supervisor.get_status()
@@ -292,7 +293,7 @@ class TestSupervisorIntegration:
         agent_a = AgentA(workspace=str(tmp_path))
         reflector = Reflector()
         
-        supervisor = Supervisor(agent_a=agent_a, reflector=reflector)
+        supervisor = Supervisor(agent_a=agent_a, reflector=reflector, enabled=True)
         result = supervisor.run_workflow(
             trajectories=[{'id': 't1', 'status': 'keep', 'reward': 0.8}],
             metrics={'reward': 0.8},

@@ -1,16 +1,17 @@
-"""Multi-Agent 协作系统 - Supervisor 模式
+"""Multi-Agent 协作系统 - Supervisor 模式（轻量化）
 
-来自 Flowise 的灵感：
-- Supervisor (协调者) 负责任务分发和结果整合
-- Worker (执行者) 专注单一职责
-- 层级清晰，易于扩展
+来自 Claude Code + Flowise 灵感：
+- 简化层级，专注核心功能
+- 支持环境变量控制开/关
+- 任务分发与结果整合
 
-架构：
-    Supervisor (Coordinator)
-        ├── Analyst Worker (分析)
-        ├── Generator Worker (生成)
-        ├── Executor Worker (执行)
-        └── Reflector Worker (反思)
+架构（轻量化）：
+    Supervisor
+        └── Worker Pool (共享池)
+            - Analyst
+            - Generator
+            - Executor
+            - Reflector
 """
 
 from dataclasses import dataclass, field
@@ -20,9 +21,13 @@ from enum import Enum
 import json
 import os
 import sys
+import threading
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 环境变量控制（Claude Code 风格）
+COORDINATOR_MODE = os.environ.get('CURRICULUM_FORGE_COORDINATOR_MODE', '0') == '1'
 
 
 class WorkerRole(Enum):
@@ -56,11 +61,11 @@ class Task:
     created_at: datetime = None
     started_at: datetime = None
     completed_at: datetime = None
-    
+
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = datetime.now()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -82,7 +87,7 @@ class Task:
 class Worker:
     """
     Worker 基类
-    
+
     负责执行特定类型的任务
     """
     id: str
@@ -91,49 +96,49 @@ class Worker:
     description: str = ""
     capacity: int = 5                        # 并发容量
     current_tasks: List[Task] = field(default_factory=list)
-    
+
     def __post_init__(self):
         if not self.name:
             self.name = f"{self.role.value}_worker"
-    
+
     def can_accept_task(self) -> bool:
         """是否可以接受新任务"""
         return len(self.current_tasks) < self.capacity
-    
+
     def assign_task(self, task: Task) -> bool:
         """分配任务"""
         if not self.can_accept_task():
             return False
-        
+
         self.current_tasks.append(task)
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.now()
         return True
-    
+
     def execute(self, task: Task) -> Dict[str, Any]:
         """
         执行任务（子类实现）
-        
+
         Returns:
             Dict[str, Any]: 执行结果
         """
         raise NotImplementedError("子类必须实现 execute 方法")
-    
+
     def complete_task(self, task: Task, result: Dict[str, Any]):
         """完成任务"""
         task.output_data = result
         task.status = TaskStatus.COMPLETED
         task.completed_at = datetime.now()
-        
+
         if task in self.current_tasks:
             self.current_tasks.remove(task)
-    
+
     def fail_task(self, task: Task, error: str):
         """任务失败"""
         task.error = error
         task.status = TaskStatus.FAILED
         task.completed_at = datetime.now()
-        
+
         if task in self.current_tasks:
             self.current_tasks.remove(task)
 
@@ -141,10 +146,10 @@ class Worker:
 class AnalystWorker(Worker):
     """
     分析者 Worker
-    
+
     负责分析训练进度、识别模式
     """
-    
+
     def __init__(self, agent_a=None):
         super().__init__(
             id="analyst_1",
@@ -153,14 +158,14 @@ class AnalystWorker(Worker):
             description="分析训练进度和识别模式",
         )
         self.agent_a = agent_a
-    
+
     def execute(self, task: Task) -> Dict[str, Any]:
         """执行分析任务"""
         input_data = task.input_data
-        
+
         # 分析进度
         results_tsv = input_data.get('results_tsv', '')
-        
+
         if self.agent_a:
             try:
                 progress = self.agent_a.analyze_progress(results_tsv)
@@ -174,7 +179,7 @@ class AnalystWorker(Worker):
                 }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         # 简化分析
         return {
             'progress': {
@@ -187,10 +192,10 @@ class AnalystWorker(Worker):
 class GeneratorWorker(Worker):
     """
     生成者 Worker
-    
+
     负责生成训练环境、任务
     """
-    
+
     def __init__(self, agent_a=None):
         super().__init__(
             id="generator_1",
@@ -199,20 +204,20 @@ class GeneratorWorker(Worker):
             description="生成训练环境和任务",
         )
         self.agent_a = agent_a
-    
+
     def execute(self, task: Task) -> Dict[str, Any]:
         """执行生成任务"""
         input_data = task.input_data
-        
+
         progress_data = input_data.get('progress', {})
-        
+
         if self.agent_a:
             try:
                 # 导入 AgentBProgress
                 from agent_a.generator import AgentBProgress
                 progress = AgentBProgress(**progress_data)
                 env = self.agent_a.generate_environment(progress)
-                
+
                 return {
                     'environment': {
                         'id': env.id,
@@ -223,7 +228,7 @@ class GeneratorWorker(Worker):
                 }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         # 简化生成
         return {
             'environment': {
@@ -237,10 +242,10 @@ class GeneratorWorker(Worker):
 class ExecutorWorker(Worker):
     """
     执行者 Worker
-    
+
     负责执行实验
     """
-    
+
     def __init__(self, agent_b=None):
         super().__init__(
             id="executor_1",
@@ -250,20 +255,20 @@ class ExecutorWorker(Worker):
             capacity=3,  # 执行者容量较低
         )
         self.agent_b = agent_b
-    
+
     def execute(self, task: Task) -> Dict[str, Any]:
         """执行实验任务"""
         input_data = task.input_data
-        
+
         experiment_idea = input_data.get('experiment_idea', {})
         env = input_data.get('environment', {})
-        
+
         if self.agent_b:
             try:
                 from agent_b.learner import ExperimentIdea
                 idea = ExperimentIdea(**experiment_idea)
                 result = self.agent_b.run_experiment(idea, env)
-                
+
                 return {
                     'result': {
                         'commit': result.commit,
@@ -273,7 +278,7 @@ class ExecutorWorker(Worker):
                 }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         # 简化执行
         return {
             'result': {
@@ -286,10 +291,10 @@ class ExecutorWorker(Worker):
 class ReflectorWorker(Worker):
     """
     反思者 Worker
-    
+
     负责反思实验结果
     """
-    
+
     def __init__(self, reflector=None):
         super().__init__(
             id="reflector_1",
@@ -298,19 +303,19 @@ class ReflectorWorker(Worker):
             description="反思实验结果并提出改进建议",
         )
         self.reflector = reflector
-    
+
     def execute(self, task: Task) -> Dict[str, Any]:
         """执行反思任务"""
         input_data = task.input_data
-        
+
         trajectories = input_data.get('trajectories', [])
         metrics = input_data.get('metrics', {})
         stage = input_data.get('stage', 'intermediate')
-        
+
         if self.reflector:
             try:
                 reflection = self.reflector.reflect(trajectories, metrics, stage)
-                
+
                 return {
                     'reflection': {
                         'timestamp': reflection.timestamp,
@@ -320,7 +325,7 @@ class ReflectorWorker(Worker):
                 }
             except Exception as e:
                 return {'error': str(e)}
-        
+
         # 简化反思
         return {
             'reflection': {
@@ -332,56 +337,63 @@ class ReflectorWorker(Worker):
 
 class Supervisor:
     """
-    Supervisor (协调者)
-    
-    来自 Flowise 的灵感：
-    - 负责任务分发
-    - 协调多个 Worker
-    - 整合执行结果
-    - 管理工作流状态
-    
+    Supervisor (协调者) - 轻量化版本
+
+    来自 Claude Code + Flowise 灵感：
+    - 环境变量控制开关
+    - 简化层级，Worker 池共享
+    - 任务分发与结果整合
+    - 线程安全
+
     工作流程：
-    1. 接收任务请求
-    2. 分解为子任务
-    3. 分配给合适的 Worker
-    4. 监控执行状态
-    5. 整合结果并返回
+    1. 检查环境变量是否启用
+    2. 接收任务请求
+    3. 分配给 Worker 池
+    4. 整合结果并返回
     """
-    
+
     def __init__(
         self,
         agent_a=None,
         agent_b=None,
         reflector=None,
         max_concurrent_tasks: int = 10,
+        enabled: bool = None,
     ):
         """
         初始化 Supervisor
-        
+
         Args:
             agent_a: Agent A 实例（可选）
             agent_b: Agent B 实例（可选）
             reflector: Reflector 实例（可选）
             max_concurrent_tasks: 最大并发任务数
+            enabled: 是否启用（默认读取环境变量）
         """
         self.agent_a = agent_a
         self.agent_b = agent_b
         self.reflector = reflector
         self.max_concurrent_tasks = max_concurrent_tasks
-        
-        # 初始化 Workers
+
+        # 环境变量控制（Claude Code 风格）
+        self.enabled = enabled if enabled is not None else COORDINATOR_MODE
+
+        # 线程锁
+        self._lock = threading.Lock()
+
+        # 初始化 Workers（轻量化：统一池）
         self.workers: Dict[WorkerRole, List[Worker]] = {
             WorkerRole.ANALYST: [AnalystWorker(agent_a)],
             WorkerRole.GENERATOR: [GeneratorWorker(agent_a)],
             WorkerRole.EXECUTOR: [ExecutorWorker(agent_b)],
             WorkerRole.REFLECTOR: [ReflectorWorker(reflector)],
         }
-        
+
         # 任务队列
         self.pending_tasks: List[Task] = []
         self.running_tasks: List[Task] = []
         self.completed_tasks: List[Task] = []
-        
+
         # 统计
         self.stats = {
             'total_tasks': 0,
@@ -389,7 +401,52 @@ class Supervisor:
             'failed': 0,
             'by_role': {role.value: 0 for role in WorkerRole},
         }
-    
+
+    def is_enabled(self) -> bool:
+        """检查是否启用（支持动态切换）"""
+        # 可以动态检查环境变量
+        global COORDINATOR_MODE
+        if hasattr(self, '_override_enabled'):
+            return self._override_enabled
+        return COORDINATOR_MODE == '1' or self.enabled
+
+    def enable(self):
+        """启用 Coordinator"""
+        self._override_enabled = True
+
+    def disable(self):
+        """禁用 Coordinator"""
+        self._override_enabled = False
+
+    def toggle(self) -> bool:
+        """切换状态"""
+        if hasattr(self, '_override_enabled'):
+            self._override_enabled = not self._override_enabled
+        else:
+            self._override_enabled = not self.enabled
+        return self._override_enabled
+        
+        # 初始化 Workers（轻量化：统一池）
+        self.workers: Dict[WorkerRole, List[Worker]] = {
+            WorkerRole.ANALYST: [AnalystWorker(agent_a)],
+            WorkerRole.GENERATOR: [GeneratorWorker(agent_a)],
+            WorkerRole.EXECUTOR: [ExecutorWorker(agent_b)],
+            WorkerRole.REFLECTOR: [ReflectorWorker(reflector)],
+        }
+
+        # 任务队列
+        self.pending_tasks: List[Task] = []
+        self.running_tasks: List[Task] = []
+        self.completed_tasks: List[Task] = []
+
+        # 统计
+        self.stats = {
+            'total_tasks': 0,
+            'completed': 0,
+            'failed': 0,
+            'by_role': {role.value: 0 for role in WorkerRole},
+        }
+
     def create_task(
         self,
         name: str,
@@ -405,70 +462,70 @@ class Supervisor:
             role=role,
             input_data=input_data,
         )
-        
+
         self.stats['total_tasks'] += 1
         return task
-    
+
     def assign_task(self, task: Task) -> bool:
         """
         分配任务给合适的 Worker
-        
+
         Returns:
             bool: 是否成功分配
         """
         role = task.role
         workers = self.workers.get(role, [])
-        
+
         # 找到可用的 Worker
         for worker in workers:
             if worker.can_accept_task():
                 worker.assign_task(task)
                 self.running_tasks.append(task)
                 return True
-        
+
         # 没有可用的 Worker，加入待处理队列
         self.pending_tasks.append(task)
         return False
-    
+
     def execute_task(self, task: Task) -> Dict[str, Any]:
         """
         执行单个任务
-        
+
         Returns:
             Dict[str, Any]: 执行结果
         """
         role = task.role
         workers = self.workers.get(role, [])
-        
+
         for worker in workers:
             if task in worker.current_tasks:
                 try:
                     result = worker.execute(task)
                     worker.complete_task(task, result)
-                    
+
                     # 更新统计
                     self.stats['completed'] += 1
                     self.stats['by_role'][role.value] += 1
-                    
+
                     # 移动到已完成队列
                     if task in self.running_tasks:
                         self.running_tasks.remove(task)
                     self.completed_tasks.append(task)
-                    
+
                     return result
-                    
+
                 except Exception as e:
                     worker.fail_task(task, str(e))
                     self.stats['failed'] += 1
-                    
+
                     if task in self.running_tasks:
                         self.running_tasks.remove(task)
                     self.completed_tasks.append(task)
-                    
+
                     return {'error': str(e)}
-        
+
         return {'error': 'Task not found in any worker'}
-    
+
     def run_workflow(
         self,
         results_tsv: str = "",
@@ -479,22 +536,32 @@ class Supervisor:
         运行完整工作流
         
         流程：
-        1. 分析进度 (Analyst)
-        2. 生成环境 (Generator)
-        3. 执行实验 (Executor)
-        4. 反思结果 (Reflector)
+        1. 检查是否启用
+        2. 分析进度 (Analyst)
+        3. 生成环境 (Generator)
+        4. 执行实验 (Executor)
+        5. 反思结果 (Reflector)
         
         Returns:
             Dict[str, Any]: 工作流结果
         """
+        # 检查是否启用
+        if not self.is_enabled():
+            return {
+                'enabled': False,
+                'message': 'Coordinator is disabled. Set CURRICULUM_FORGE_COORDINATOR_MODE=1 to enable.',
+                'steps': {},
+            }
+        
         workflow_result = {
             'started_at': datetime.now().isoformat(),
+            'enabled': True,
             'steps': {},
         }
-        
+
         trajectories = trajectories or []
         metrics = metrics or {}
-        
+
         # Step 1: 分析进度
         analyst_task = self.create_task(
             name="Analyze Progress",
@@ -505,7 +572,7 @@ class Supervisor:
         self.assign_task(analyst_task)
         analyst_result = self.execute_task(analyst_task)
         workflow_result['steps']['analyst'] = analyst_result
-        
+
         # Step 2: 生成环境
         progress_data = analyst_result.get('progress', {})
         generator_task = self.create_task(
@@ -517,7 +584,7 @@ class Supervisor:
         self.assign_task(generator_task)
         generator_result = self.execute_task(generator_task)
         workflow_result['steps']['generator'] = generator_result
-        
+
         # Step 3: 执行实验（可选，有实验想法时执行）
         env_data = generator_result.get('environment', {})
         if env_data.get('tasks'):
@@ -533,7 +600,7 @@ class Supervisor:
             self.assign_task(experiment_task)
             executor_result = self.execute_task(experiment_task)
             workflow_result['steps']['executor'] = executor_result
-        
+
         # Step 4: 反思结果
         reflector_task = self.create_task(
             name="Reflect on Results",
@@ -548,13 +615,13 @@ class Supervisor:
         self.assign_task(reflector_task)
         reflector_result = self.execute_task(reflector_task)
         workflow_result['steps']['reflector'] = reflector_result
-        
+
         # 完成工作流
         workflow_result['completed_at'] = datetime.now().isoformat()
         workflow_result['stats'] = self.stats.copy()
-        
+
         return workflow_result
-    
+
     def get_status(self) -> Dict[str, Any]:
         """获取 Supervisor 状态"""
         return {
@@ -567,24 +634,24 @@ class Supervisor:
             },
             'stats': self.stats,
         }
-    
+
     def add_worker(self, worker: Worker):
         """添加 Worker"""
         role = worker.role
         if role not in self.workers:
             self.workers[role] = []
         self.workers[role].append(worker)
-    
+
     def process_pending_tasks(self):
         """处理待处理任务队列"""
         still_pending = []
-        
+
         for task in self.pending_tasks:
             if not self.assign_task(task):
                 still_pending.append(task)
-        
+
         self.pending_tasks = still_pending
-    
+
     def clear_completed(self):
         """清理已完成任务"""
         self.completed_tasks.clear()
