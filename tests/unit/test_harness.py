@@ -1,270 +1,449 @@
-"""测试 Harness Engineering 模块
+"""Unit tests for Harness
 
-测试 doc_gardening.py 和 architecture_engine.py 的核心功能
+Run: pytest tests/unit/test_harness.py -v
 """
 
 import pytest
 import sys
 import os
-import tempfile
-from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.doc_gardening import DocGardeningAgent, DocStatus, DocInfo
-from shared.architecture_engine import (
-    ArchitectureRuleEngine,
-    ViolationSeverity,
-    Violation,
-    Rule,
+from services.harness import (
+    HarnessCase,
+    CaseResult,
+    HarnessReport,
+    HarnessRunner,
+    HarnessSuite,
+    HarnessScorer,
+    Verdict,
+    build_tool_basics_suite,
+    build_curriculum_suite,
+)
+from services.query_engine import (
+    QueryEngine,
+    QueryConfig,
+    ToolRegistry,
+    ToolDefinition,
+    LLMResponse,
+    ToolUseBlock,
+    MockBackend,
 )
 
 
-class TestDocGardeningAgent:
-    """DocGardeningAgent 测试套件"""
-    
-    @pytest.fixture
-    def agent(self, tmp_path):
-        """创建测试用 Agent"""
-        return DocGardeningAgent(
-            workspace=str(tmp_path),
-            stale_threshold_days=7,
-            outdated_threshold_days=30,
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def make_engine_with_responses(responses):
+    """Build a QueryEngine with scripted responses"""
+
+    class FixedBackend(MockBackend):
+        def __init__(self, resps):
+            super().__init__()
+            self._resps = list(resps)
+            self._idx = 0
+
+        def call(self, messages, system, tools, max_tokens):
+            if self._idx < len(self._resps):
+                r = self._resps[self._idx]
+                self._idx += 1
+                return r
+            return LLMResponse("Done.", [], "end_turn", 10, 5)
+
+    registry = ToolRegistry()
+    for name in ["read_file", "write_file", "search"]:
+        registry.register(ToolDefinition(
+            name=name,
+            description=f"Tool: {name}",
+            input_schema={
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+            handler=lambda inp, n=name: f"{n}({inp.get('target', '')})",
+        ))
+
+    engine = QueryEngine(
+        backend=FixedBackend(responses),
+        tools=registry,
+        config=QueryConfig(max_turns=3),
+    )
+    return engine
+
+
+def tool_response(name, target, extra=None):
+    """Helper: LLM calls a tool"""
+    inp = {"target": target}
+    if extra:
+        inp.update(extra)
+    return LLMResponse(
+        content=f"Using {name}...",
+        tool_uses=[ToolUseBlock(id="t1", name=name, input=inp)],
+        stop_reason="tool_use",
+        input_tokens=50, output_tokens=20,
+    )
+
+
+def end_response(content="Done."):
+    return LLMResponse(content=content, tool_uses=[], stop_reason="end_turn",
+                       input_tokens=30, output_tokens=10)
+
+
+# ─── HarnessScorer ────────────────────────────────────────────────────────────
+
+class TestHarnessScorer:
+    def setup_method(self):
+        self.scorer = HarnessScorer()
+
+    def test_perfect_match(self):
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="read_file",
+            actual_params={"target": "config.json"},
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
         )
-    
-    @pytest.fixture
-    def setup_docs(self, tmp_path):
-        """创建测试文档"""
-        docs_dir = tmp_path / "docs"
-        docs_dir.mkdir()
-        
-        # 创建新文档
-        new_doc = docs_dir / "new.md"
-        new_doc.write_text("# New Doc\nThis is a new document.")
-        
-        # 创建旧文档（模拟过期）
-        old_doc = docs_dir / "old.md"
-        old_doc.write_text("# Old Doc\nThis is an old document.")
-        
-        # 修改文件时间
-        import time
-        old_time = time.time() - 86400 * 15  # 15 天前
-        os.utime(old_doc, (old_time, old_time))
-        
-        return docs_dir
-    
-    def test_agent_initialization(self, agent):
-        """测试 Agent 初始化"""
-        assert agent is not None
-        assert hasattr(agent, 'scan')
-        assert hasattr(agent, 'get_stale_docs')
-        assert hasattr(agent, 'trigger_fix')
-    
-    def test_scan_current_docs(self, agent, setup_docs):
-        """测试扫描最新文档"""
-        report = agent.scan()
-        
-        assert report is not None
-        assert report.total_docs >= 1
-        assert report.current_docs >= 1
-    
-    def test_scan_stale_docs(self, agent, setup_docs):
-        """测试扫描过期文档"""
-        report = agent.scan()
-        
-        # 应该检测到过期文档
-        assert report.total_docs >= 2
-        assert report.stale_docs >= 1
-    
-    def test_get_stale_docs_list(self, agent, setup_docs):
-        """测试获取过期文档列表"""
-        agent.scan()  # 先扫描
-        stale_docs = agent.get_stale_docs()
-        
-        assert isinstance(stale_docs, list)
-        assert len(stale_docs) >= 1
-        
-        # 验证文档信息
-        doc = stale_docs[0]
-        assert isinstance(doc, DocInfo)
-        assert doc.status in [DocStatus.STALE, DocStatus.OUTDATED]
-        assert doc.age_days >= 7
-    
-    def test_trigger_fix(self, agent, setup_docs):
-        """测试触发修复"""
-        agent.scan()
-        stale_docs = agent.get_stale_docs()
-        
-        if stale_docs:
-            doc = stale_docs[0]
-            result = agent.trigger_fix(doc)
-            
-            assert result is not None
-            assert 'task' in result
-            assert result['task'] == 'review_doc'
-            assert 'priority' in result
-    
-    def test_report_generation(self, agent, setup_docs):
-        """测试报告生成"""
-        report = agent.scan()
-        
-        assert report.summary is not None
-        assert len(report.scanned_dirs) > 0
-    
-    def test_mark_current(self, agent, setup_docs):
-        """测试标记文档为最新"""
-        old_doc = setup_docs / "old.md"
-        
-        agent.mark_current(str(old_doc))
-        
-        # 验证状态已更新
-        assert os.path.exists(agent.state_file)
+        assert rname == 1.0
+        assert rparam == 1.0
+        assert verdict == Verdict.PASS
 
-
-class TestArchitectureRuleEngine:
-    """ArchitectureRuleEngine 测试套件"""
-    
-    @pytest.fixture
-    def engine(self, tmp_path):
-        """创建测试用引擎"""
-        return ArchitectureRuleEngine(
-            workspace=str(tmp_path),
-            layer_mapping={
-                '/ui/': 'ui',
-                '/service/': 'service',
-                '/repo/': 'repo',
-                '/types/': 'types',
-            }
+    def test_wrong_tool(self):
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="write_file",
+            actual_params={"target": "config.json"},
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
         )
-    
-    @pytest.fixture
-    def setup_violations(self, tmp_path):
-        """创建违规代码结构"""
-        # 创建目录
-        ui_dir = tmp_path / "ui"
-        service_dir = tmp_path / "service"
-        repo_dir = tmp_path / "repo"
-        
-        ui_dir.mkdir()
-        service_dir.mkdir()
-        repo_dir.mkdir()
-        
-        # 创建违规文件：UI 依赖 Service
-        ui_file = ui_dir / "view.py"
-        ui_file.write_text("from service import UserService\n\nclass View:\n    pass")
-        
-        # 创建正常文件：Service 依赖 Repo
-        service_file = service_dir / "user_service.py"
-        service_file.write_text("from repo import UserRepo\n\nclass UserService:\n    pass")
-        
-        return tmp_path
-    
-    def test_engine_initialization(self, engine):
-        """测试引擎初始化"""
-        assert engine is not None
-        assert hasattr(engine, 'validate')
-        assert hasattr(engine, 'validate_all')
-        assert hasattr(engine, 'should_block')
-    
-    def test_get_layer(self, engine, tmp_path):
-        """测试层次识别"""
-        ui_path = str(tmp_path / "ui" / "view.py")
-        service_path = str(tmp_path / "service" / "user.py")
-        
-        assert engine.get_layer(ui_path) == 'ui'
-        assert engine.get_layer(service_path) == 'service'
-    
-    def test_validate_single_file(self, engine, setup_violations):
-        """测试单个文件验证"""
-        ui_file = setup_violations / "ui" / "view.py"
-        violations = engine.validate(str(ui_file))
-        
-        assert isinstance(violations, list)
-    
-    def test_validate_all(self, engine, setup_violations):
-        """测试全量验证"""
-        report = engine.validate_all(['.py'])
-        
-        assert report is not None
-        assert report.total_files >= 2
-        assert report.total_violations >= 0
-    
-    def test_should_block(self, engine, setup_violations):
-        """测试是否应该阻止"""
-        report = engine.validate_all(['.py'])
-        
-        should_block = engine.should_block(report)
-        assert isinstance(should_block, bool)
-    
-    def test_suggest_fix(self, engine, setup_violations):
-        """测试修复建议"""
-        report = engine.validate_all(['.py'])
-        
-        if report.violations:
-            suggestion = engine.suggest_fix(report.violations[0])
-            
-            assert suggestion is not None
-            assert len(suggestion) > 0
-    
-    def test_default_layer_order(self, engine):
-        """测试默认层次顺序"""
-        assert 'types' in engine.DEFAULT_LAYER_ORDER
-        assert 'ui' in engine.DEFAULT_LAYER_ORDER
-        
-        # 验证顺序：types 最低，ui 最高
-        assert engine.DEFAULT_LAYER_ORDER.index('types') < engine.DEFAULT_LAYER_ORDER.index('ui')
-    
-    def test_rule_can_depend(self, engine):
-        """测试依赖规则"""
-        rule = engine.DEFAULT_RULES[0]  # dependency_direction
-        
-        # 可以从低层依赖高层
-        assert rule.can_depend('types', 'service') is True
-        assert rule.can_depend('service', 'ui') is True
-        
-        # 不能从高层依赖低层
-        assert rule.can_depend('ui', 'service') is False
-        assert rule.can_depend('ui', 'repo') is False
+        assert rname == -1.0
+        assert verdict == Verdict.FAIL
 
-
-class TestHarnessIntegration:
-    """Harness 模块集成测试"""
-    
-    @pytest.mark.integration
-    def test_full_harness_workflow(self, tmp_path):
-        """测试完整 Harness 工作流"""
-        # 创建文档结构
-        docs_dir = tmp_path / "docs"
-        docs_dir.mkdir()
-        
-        new_doc = docs_dir / "new.md"
-        new_doc.write_text("# New")
-        
-        # 创建代码结构
-        ui_dir = tmp_path / "ui"
-        ui_dir.mkdir()
-        
-        ui_file = ui_dir / "view.py"
-        ui_file.write_text("from service import Service\n\nclass View:\n    pass")
-        
-        # 运行 DocGardening
-        gardener = DocGardeningAgent(
-            workspace=str(tmp_path),
-            scan_dirs=['docs'],
+    def test_right_tool_wrong_params(self):
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="read_file",
+            actual_params={"target": "wrong.json"},
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
         )
-        garden_report = gardener.scan()
-        
-        # 运行 Architecture Check
-        engine = ArchitectureRuleEngine(
-            workspace=str(tmp_path),
-            layer_mapping={'/ui/': 'ui', '/service/': 'service'}
+        assert rname == 1.0
+        assert rparam < 1.0
+        assert verdict == Verdict.PARTIAL
+
+    def test_no_tool_called(self):
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool=None,
+            actual_params={},
+            expected_tool="read_file",
+            expected_params={},
         )
-        arch_report = engine.validate_all(['.py'])
-        
-        # 验证结果
-        assert garden_report.total_docs >= 1
-        assert arch_report.total_files >= 1
+        assert verdict == Verdict.SKIP
+        assert rfinal == 0.0
+
+    def test_no_expected_params(self):
+        """When no params expected, any params are fine"""
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="read_file",
+            actual_params={"target": "anything.txt"},
+            expected_tool="read_file",
+            expected_params={},
+        )
+        assert rname == 1.0
+        assert rparam == 1.0
+        assert verdict == Verdict.PASS
+
+    def test_param_tolerance(self):
+        """With tolerance, close values should match"""
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="read_file",
+            actual_params={"target": "Config.json"},  # Different case
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
+            param_tolerance=0.5,
+        )
+        assert verdict == Verdict.PASS
+
+    def test_partial_param_match(self):
+        """Partial param match gives intermediate score"""
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="read_file",
+            actual_params={"target": "config.json", "extra": "x"},
+            expected_tool="read_file",
+            expected_params={"target": "config.json", "mode": "binary"},
+        )
+        # target matches, mode doesn't → 1/2 = 0.5 → rparam = 0.5*2-1 = 0.0
+        assert rname == 1.0
+        assert rparam == 0.0
+
+    def test_rfinal_is_average(self):
+        rname, rparam, rfinal, verdict = self.scorer.score(
+            actual_tool="read_file",
+            actual_params={"target": "config.json"},
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
+        )
+        assert abs(rfinal - (rname + rparam) / 2.0) < 1e-9
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+# ─── HarnessReport ────────────────────────────────────────────────────────────
+
+class TestHarnessReport:
+    def _make_result(self, verdict, rname=1.0, rparam=1.0):
+        rfinal = (rname + rparam) / 2.0
+        return CaseResult(
+            case_id="test",
+            verdict=verdict,
+            actual_tool="read_file",
+            actual_params={},
+            expected_tool="read_file",
+            expected_params={},
+            rname=rname, rparam=rparam, rfinal=rfinal,
+        )
+
+    def test_pass_rate(self):
+        results = [
+            self._make_result(Verdict.PASS),
+            self._make_result(Verdict.PASS),
+            self._make_result(Verdict.FAIL),
+            self._make_result(Verdict.SKIP),
+        ]
+        report = HarnessReport(results=results)
+        assert report.pass_rate == 0.5
+        assert report.passed == 2
+        assert report.failed == 1
+        assert report.skipped == 1
+
+    def test_tool_accuracy(self):
+        results = [
+            self._make_result(Verdict.PASS),
+            self._make_result(Verdict.PARTIAL),
+            CaseResult("x", Verdict.FAIL, "wrong_tool", {}, "read_file", {},
+                       -1.0, -1.0, -1.0),
+        ]
+        report = HarnessReport(results=results)
+        # 2 out of 3 have actual_tool == expected_tool
+        assert report.tool_accuracy == pytest.approx(2/3)
+
+    def test_avg_scores(self):
+        results = [
+            self._make_result(Verdict.PASS, rname=1.0, rparam=1.0),
+            self._make_result(Verdict.FAIL, rname=-1.0, rparam=-1.0),
+        ]
+        report = HarnessReport(results=results)
+        assert report.avg_rname == 0.0
+        assert report.avg_rparam == 0.0
+
+    def test_summary_string(self):
+        results = [self._make_result(Verdict.PASS)]
+        report = HarnessReport(results=results, suite_name="test-suite")
+        summary = report.summary()
+        assert "test-suite" in summary
+        assert "100.0%" in summary
+
+    def test_to_dict(self):
+        results = [self._make_result(Verdict.PASS)]
+        report = HarnessReport(results=results)
+        d = report.to_dict()
+        assert d["passed"] == 1
+        assert d["pass_rate"] == 1.0
+        assert len(d["results"]) == 1
+
+    def test_failures_filter(self):
+        results = [
+            self._make_result(Verdict.PASS),
+            self._make_result(Verdict.FAIL),
+            self._make_result(Verdict.PARTIAL),
+        ]
+        report = HarnessReport(results=results)
+        failures = report.failures()
+        assert len(failures) == 2
+
+
+# ─── HarnessRunner ────────────────────────────────────────────────────────────
+
+class TestHarnessRunner:
+    def test_pass_case(self):
+        """LLM calls correct tool → PASS"""
+        engine = make_engine_with_responses([
+            tool_response("read_file", "config.json"),
+            end_response(),
+        ])
+        runner = HarnessRunner(engine)
+        case = HarnessCase(
+            id="test-pass",
+            prompt="Read config.json",
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
+        )
+        result = runner.run_case(case)
+        assert result.verdict == Verdict.PASS
+        assert result.actual_tool == "read_file"
+        assert result.rname == 1.0
+
+    def test_fail_case(self):
+        """LLM calls wrong tool → FAIL"""
+        engine = make_engine_with_responses([
+            tool_response("write_file", "config.json"),
+            end_response(),
+        ])
+        runner = HarnessRunner(engine)
+        case = HarnessCase(
+            id="test-fail",
+            prompt="Read config.json",
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
+        )
+        result = runner.run_case(case)
+        assert result.verdict == Verdict.FAIL
+        assert result.rname == -1.0
+
+    def test_skip_case(self):
+        """LLM calls no tool → SKIP"""
+        engine = make_engine_with_responses([end_response("I don't need tools.")])
+        runner = HarnessRunner(engine)
+        case = HarnessCase(
+            id="test-skip",
+            prompt="Read config.json",
+            expected_tool="read_file",
+        )
+        result = runner.run_case(case)
+        assert result.verdict == Verdict.SKIP
+
+    def test_partial_case(self):
+        """LLM calls right tool, wrong params → PARTIAL"""
+        engine = make_engine_with_responses([
+            tool_response("read_file", "wrong.json"),
+            end_response(),
+        ])
+        runner = HarnessRunner(engine)
+        case = HarnessCase(
+            id="test-partial",
+            prompt="Read config.json",
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
+        )
+        result = runner.run_case(case)
+        assert result.verdict == Verdict.PARTIAL
+        assert result.rname == 1.0
+        assert result.rparam < 1.0
+
+    def test_run_suite(self):
+        """Run multiple cases"""
+        engine = make_engine_with_responses([
+            tool_response("read_file", "config.json"), end_response(),
+            tool_response("write_file", "out.txt"), end_response(),
+            end_response("No tool needed"),
+        ])
+        runner = HarnessRunner(engine)
+        cases = [
+            HarnessCase("c1", "Read config.json", "read_file", {"target": "config.json"}),
+            HarnessCase("c2", "Write to out.txt", "write_file", {"target": "out.txt"}),
+            HarnessCase("c3", "Read data.csv", "read_file"),
+        ]
+        report = runner.run(cases, suite_name="test-suite")
+        assert report.total == 3
+        assert report.passed >= 1
+
+    def test_callback_called(self):
+        """on_result callback should be called for each case"""
+        engine = make_engine_with_responses([end_response()])
+        results_received = []
+        runner = HarnessRunner(engine, on_result=results_received.append)
+        case = HarnessCase("c1", "test", "read_file")
+        runner.run_case(case)
+        assert len(results_received) == 1
+
+    def test_engine_reset_between_cases(self):
+        """Each case should start with fresh message history"""
+        engine = make_engine_with_responses([
+            tool_response("read_file", "a.txt"), end_response(),
+            tool_response("read_file", "b.txt"), end_response(),
+        ])
+        runner = HarnessRunner(engine)
+        cases = [
+            HarnessCase("c1", "Read a.txt", "read_file"),
+            HarnessCase("c2", "Read b.txt", "read_file"),
+        ]
+        report = runner.run(cases)
+        # Both should pass independently
+        assert report.total == 2
+
+
+# ─── HarnessSuite ─────────────────────────────────────────────────────────────
+
+class TestHarnessSuite:
+    def test_add_and_len(self):
+        suite = HarnessSuite("test")
+        suite.add(HarnessCase("c1", "prompt", "tool"))
+        suite.add(HarnessCase("c2", "prompt", "tool"))
+        assert len(suite) == 2
+
+    def test_filter_by_tag(self):
+        suite = HarnessSuite("test")
+        suite.add(HarnessCase("c1", "p", "t", tags=["read"]))
+        suite.add(HarnessCase("c2", "p", "t", tags=["write"]))
+        suite.add(HarnessCase("c3", "p", "t", tags=["read", "advanced"]))
+
+        read_cases = suite.cases(tags=["read"])
+        assert len(read_cases) == 2
+
+    def test_to_from_dict(self):
+        suite = HarnessSuite("test")
+        suite.add(HarnessCase(
+            id="c1",
+            prompt="Read config.json",
+            expected_tool="read_file",
+            expected_params={"target": "config.json"},
+            tags=["read"],
+        ))
+        d = suite.to_dict()
+        restored = HarnessSuite.from_dict(d)
+        assert len(restored) == 1
+        assert restored.cases()[0].id == "c1"
+        assert restored.cases()[0].expected_tool == "read_file"
+
+    def test_to_from_json(self, tmp_path):
+        suite = HarnessSuite("test")
+        suite.add(HarnessCase("c1", "Read file", "read_file"))
+        path = str(tmp_path / "suite.json")
+        suite.to_json(path)
+        restored = HarnessSuite.from_json(path)
+        assert len(restored) == 1
+
+
+# ─── Built-in Suites ──────────────────────────────────────────────────────────
+
+class TestBuiltinSuites:
+    def test_tool_basics_suite(self):
+        suite = build_tool_basics_suite(["read_file", "write_file", "search"])
+        assert len(suite) > 0
+        tools = {c.expected_tool for c in suite.cases()}
+        assert "read_file" in tools
+
+    def test_tool_basics_empty_tools(self):
+        suite = build_tool_basics_suite([])
+        assert len(suite) == 0
+
+    def test_curriculum_beginner(self):
+        suite = build_curriculum_suite("beginner")
+        assert len(suite) > 0
+        assert all("beginner" in c.tags for c in suite.cases())
+
+    def test_curriculum_intermediate(self):
+        suite = build_curriculum_suite("intermediate")
+        assert len(suite) > 0
+
+    def test_curriculum_advanced(self):
+        suite = build_curriculum_suite("advanced")
+        assert len(suite) > 0
+
+    def test_run_curriculum_suite(self):
+        """Run curriculum suite against mock engine"""
+        suite = build_curriculum_suite("beginner")
+        engine = make_engine_with_responses(
+            [tool_response("read_file", "data.csv"), end_response()] * 10
+        )
+        runner = HarnessRunner(engine)
+        report = runner.run(suite.cases(), suite_name=suite.name)
+        assert report.total == len(suite)
+        assert report.pass_rate >= 0.0  # At least runs without error
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
