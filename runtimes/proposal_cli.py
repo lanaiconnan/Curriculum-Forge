@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from providers.base import TaskPhase
-from runtimes import CheckpointStore, CheckpointRecord, RunState
+from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
+from providers.base import TaskPhase, RunState
 
 
 # ── Proposal Schema ────────────────────────────────────────────────────────────
