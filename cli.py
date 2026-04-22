@@ -18,6 +18,17 @@ from shared.local_llm import LocalLLMManager, auto_detect_local_llm
 from shared.doc_gardening import DocGardeningAgent
 from shared.architecture_engine import ArchitectureRuleEngine
 
+# ── MoonClaw Pipeline ──────────────────────────────────────────────────────────
+# MoonClaw AdaptiveRuntime + Checkpoint persistence for Curriculum-Forge.
+# Phase 1+3: Provider abstraction + Checkpoint persistence.
+from pathlib import Path as _Path
+from runtimes.checkpoint_store import CheckpointStore
+from runtimes.adaptive_runtime import AdaptiveRuntime, PipelineConfig
+from providers.curriculum_provider import CurriculumProvider
+from providers.harness_provider import HarnessProvider
+from providers.memory_provider import MemoryProvider
+from providers.review_provider import ReviewProvider
+
 
 def show_program(agent_type: str):
     """显示指定 Agent 的工作手册"""
@@ -412,6 +423,200 @@ def show_confidence():
         return 1
 
 
+# ── MoonClaw Forge Handlers ───────────────────────────────────────────────────
+
+# Provider name → class mapping
+_PROVIDER_REGISTRY = {
+    "CurriculumProvider": CurriculumProvider,
+    "HarnessProvider": HarnessProvider,
+    "MemoryProvider": MemoryProvider,
+    "ReviewProvider": ReviewProvider,
+}
+
+# Default checkpoint directory
+_CHECKPOINT_DIR = _Path.home() / ".curriculum-forge" / "checkpoints"
+
+
+def _load_profile(profile_name):
+    """Load a profile JSON from profiles/ directory."""
+    profile_path = _Path(__file__).parent / "profiles" / f"{profile_name}.json"
+    if not profile_path.exists():
+        print(f"❌ Profile not found: {profile_name}")
+        print(f"   Available: rl_controller, pure_harness, progressive_disclosure")
+        return None
+    import json
+    with open(profile_path, "r") as f:
+        return json.load(f)
+
+
+def _build_pipeline_config(profile, args):
+    """Build PipelineConfig from profile JSON + CLI overrides."""
+    providers = []
+    for name in profile.get("providers", []):
+        cls = _PROVIDER_REGISTRY.get(name)
+        if cls is None:
+            print(f"⚠️ Unknown provider: {name}, skipping")
+            continue
+        providers.append(cls())
+
+    defaults = profile.get("defaults", {})
+    runtime_cfg = profile.get("runtime", {})
+
+    interactive = args.interactive or runtime_cfg.get("interactive", False)
+    auto_save = not args.no_save
+
+    return PipelineConfig(
+        profile=profile["name"],
+        providers=providers,
+        checkpoint_dir=_CHECKPOINT_DIR,
+        auto_save=auto_save,
+        interactive=interactive,
+    ), defaults
+
+
+def forge_run(args):
+    """Run a MoonClaw Pipeline from a profile."""
+    import asyncio
+
+    profile = _load_profile(args.profile)
+    if profile is None:
+        return 1
+
+    config, defaults = _build_pipeline_config(profile, args)
+
+    # Build run config from defaults + CLI overrides
+    run_config = dict(defaults)
+    if args.topic:
+        run_config["topic"] = args.topic
+    if args.difficulty:
+        run_config["difficulty"] = args.difficulty
+
+    # Ensure required keys
+    if "topic" not in run_config:
+        run_config["topic"] = "Python"
+    if "difficulty" not in run_config:
+        run_config["difficulty"] = "intermediate"
+
+    store = CheckpointStore(base_dir=_CHECKPOINT_DIR)
+    rt = AdaptiveRuntime(config=config, checkpoint_store=store)
+
+    if args.resume:
+        print(f"🔄 Resuming Checkpoint: {args.resume}")
+        try:
+            record = asyncio.get_event_loop().run_until_complete(
+                rt.resume(args.resume)
+            )
+        except ValueError as e:
+            print(f"❌ {e}")
+            return 1
+    else:
+        print(f"🚀 Running Pipeline: {args.profile}")
+        print(f"   Topic: {run_config.get('topic')}")
+        print(f"   Difficulty: {run_config.get('difficulty')}")
+        print(f"   Providers: {', '.join(p.__class__.__name__ for p in config.providers)}")
+        print()
+        try:
+            record = asyncio.get_event_loop().run_until_complete(
+                rt.run(run_config)
+            )
+        except RuntimeError as e:
+            print(f"\n❌ Pipeline failed: {e}")
+            return 1
+
+    # Print results
+    print(f"\n{'=' * 60}")
+    print(f"  Run ID:     {record.id}")
+    print(f"  Profile:    {record.profile}")
+    print(f"  State:      {record.state.value}")
+    print(f"  Providers:  {record.metrics.get('providers_run', '?')} run / "
+                f"{record.metrics.get('providers_succeeded', '?')} succeeded")
+
+    if record.state.value == "completed":
+        # Show phase summary
+        for phase_name, phase_data in record.state_data.items():
+            status = phase_data.get("data", {}).get("status", "?")
+            print(f"  • {phase_name}: {status}")
+    elif record.state.value == "failed":
+        error = record.metrics.get("error", "unknown")
+        print(f"  Error: {error}")
+
+    print(f"{'=' * 60}")
+    return 0
+
+
+def forge_list(args):
+    """List Checkpoint records."""
+    store = CheckpointStore(base_dir=_CHECKPOINT_DIR)
+    records = store.list(profile=args.profile)
+
+    if not records:
+        print("No checkpoints found.")
+        return 0
+
+    # Show latest N
+    shown = records[:args.limit]
+    print(f"\n📋 Checkpoint Records (showing {len(shown)} of {len(records)}):\n")
+    print(f"  {'Run ID':<30} {'Profile':<22} {'State':<12} {'Created'}")
+    print(f"  {'-' * 30} {'-' * 22} {'-' * 12} {'-' * 20}")
+    for r in shown:
+        state_str = r.state.value if hasattr(r.state, "value") else str(r.state)
+        created = r.created_at[:19] if r.created_at else "?"
+        print(f"  {r.id:<30} {r.profile:<22} {state_str:<12} {created}")
+    print()
+    return 0
+
+
+def forge_status(args):
+    """Show Checkpoint summary statistics."""
+    store = CheckpointStore(base_dir=_CHECKPOINT_DIR)
+    summary = store.summary()
+
+    if summary["total"] == 0:
+        print("No checkpoints found.")
+        return 0
+
+    print(f"\n📊 Checkpoint Summary:")
+    print(f"   Total runs: {summary['total']}")
+    print(f"\n   By Profile:")
+    for profile, count in summary.get("by_profile", {}).items():
+        print(f"     • {profile}: {count}")
+    print(f"\n   By State:")
+    for state, count in summary.get("by_state", {}).items():
+        print(f"     • {state}: {count}")
+    print()
+    return 0
+
+
+def forge_log(args):
+    """Show details of a specific Checkpoint run."""
+    store = CheckpointStore(base_dir=_CHECKPOINT_DIR)
+    record = store.load(args.run_id)
+
+    if record is None:
+        print(f"❌ Run not found: {args.run_id}")
+        return 1
+
+    import json
+    state_str = record.state.value if hasattr(record.state, "value") else str(record.state)
+
+    print(f"\n{'=' * 60}")
+    print(f"  Run ID:     {record.id}")
+    print(f"  Profile:    {record.profile}")
+    print(f"  State:      {state_str}")
+    print(f"  Created:    {record.created_at}")
+    print(f"  Finished:   {record.finished_at or 'N/A'}")
+    print(f"  Config:     {json.dumps(record.config, indent=2)}")
+    print(f"\n  Metrics:")
+    for k, v in record.metrics.items():
+        print(f"    • {k}: {v}")
+    print(f"\n  State Data (phases):")
+    for phase, data in record.state_data.items():
+        phase_status = data.get("data", {}).get("status", "?") if isinstance(data, dict) else "?"
+        print(f"    • {phase}: {phase_status}")
+    print(f"{'=' * 60}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Curriculum-Forge CLI - View program.md, logs and system status",
@@ -522,7 +727,75 @@ Examples:
     # log tools
     log_tools_parser = log_subparsers.add_parser('tools', help='Show tool call entries')
     log_tools_parser.add_argument('filename', nargs='?', help='Session filename (optional)')
-    
+
+    # ── forge ────────────────────────────────────────────────────────────────────
+    # MoonClaw Pipeline commands: run, list, status, log
+    forge_parser = subparsers.add_parser('forge', help='MoonClaw Pipeline commands')
+    forge_subparsers = forge_parser.add_subparsers(
+        dest='forge_command', help='Forge subcommand'
+    )
+
+    # forge run
+    forge_run_parser = forge_subparsers.add_parser(
+        'run',
+        help='Run a MoonClaw Pipeline from a profile'
+    )
+    forge_run_parser.add_argument(
+        '--profile', '-p',
+        default='rl_controller',
+        choices=['rl_controller', 'pure_harness', 'progressive_disclosure'],
+        help='Profile to use (default: rl_controller)'
+    )
+    forge_run_parser.add_argument(
+        '--topic', '-t',
+        help='Override topic (overrides profile default)'
+    )
+    forge_run_parser.add_argument(
+        '--difficulty', '-d',
+        choices=['beginner', 'intermediate', 'advanced', 'expert'],
+        help='Override difficulty'
+    )
+    forge_run_parser.add_argument(
+        '--resume', '-r',
+        metavar='RUN_ID',
+        help='Resume from an existing Checkpoint (run_id)'
+    )
+    forge_run_parser.add_argument(
+        '--interactive', '-i',
+        action='store_true',
+        help='Enable interactive mode (pause at WaitingForInput)'
+    )
+    forge_run_parser.add_argument(
+        '--no-save',
+        action='store_true',
+        help='Disable Checkpoint auto-save'
+    )
+
+    # forge list
+    forge_list_parser = forge_subparsers.add_parser(
+        'list', help='List Checkpoint records'
+    )
+    forge_list_parser.add_argument(
+        '--profile', '-p',
+        help='Filter by profile'
+    )
+    forge_list_parser.add_argument(
+        '--limit', '-n',
+        type=int, default=10,
+        help='Max records to show (default: 10)'
+    )
+
+    # forge status
+    forge_status_parser = forge_subparsers.add_parser(
+        'status', help='Show Checkpoint summary statistics'
+    )
+
+    # forge log
+    forge_log_parser = forge_subparsers.add_parser(
+        'log', help='Show details of a specific Checkpoint run'
+    )
+    forge_log_parser.add_argument('run_id', help='Run ID (e.g. run_20260422_103000)')
+
     args = parser.parse_args()
     
     if args.command == 'show':
@@ -557,8 +830,18 @@ Examples:
         return show_verification_stats()
     elif args.command == 'confidence':
         return show_confidence()
-    elif args.command == 'llm':
-        return show_llm_status()
+    elif args.command == 'forge':
+        if args.forge_command == 'run':
+            return forge_run(args)
+        elif args.forge_command == 'list':
+            return forge_list(args)
+        elif args.forge_command == 'status':
+            return forge_status(args)
+        elif args.forge_command == 'log':
+            return forge_log(args)
+        else:
+            forge_parser.print_help()
+            return 0
     else:
         parser.print_help()
         return 0
