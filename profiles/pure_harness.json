@@ -1,0 +1,16 @@
+{
+  "name": "pure_harness",
+  "description": "仅 Harness 测试阶段（用于快速验证）",
+  "version": "1.0",
+  "providers": [
+    "HarnessProvider"
+  ],
+  "defaults": {
+    "modules": [],
+    "harness_cases": []
+  },
+  "metadata": {
+    "created": "2026-04-22",
+    "phase": "1+3"
+  }
+}

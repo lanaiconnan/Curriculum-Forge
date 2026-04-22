@@ -1,0 +1,22 @@
+{
+  "name": "rl_controller",
+  "description": "完整 RL 训练 Pipeline（4 Provider 全流程）",
+  "version": "1.0",
+  "providers": [
+    "CurriculumProvider",
+    "HarnessProvider",
+    "MemoryProvider",
+    "ReviewProvider"
+  ],
+  "defaults": {
+    "topic": "Python Coding Agent",
+    "difficulty": "intermediate",
+    "goal": "Build an autonomous code reviewer",
+    "pass_threshold": 0.7,
+    "max_iterations": 10
+  },
+  "metadata": {
+    "created": "2026-04-22",
+    "phase": "1+3"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "progressive_disclosure",
+  "description": "渐进式披露训练（每次只展示一个知识点，等待输入）",
+  "version": "1.0",
+  "providers": [
+    "CurriculumProvider",
+    "HarnessProvider",
+    "MemoryProvider",
+    "ReviewProvider"
+  ],
+  "defaults": {
+    "topic": "Python Basics",
+    "difficulty": "beginner",
+    "disclosure_mode": true,
+    "wait_for_input": true,
+    "pass_threshold": 0.9
+  },
+  "runtime": {
+    "interactive": true,
+    "waiting_behavior": "pause"
+  },
+  "metadata": {
+    "created": "2026-04-22",
+    "phase": "1+3"
+  }
+}
