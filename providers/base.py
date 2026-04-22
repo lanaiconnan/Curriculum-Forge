@@ -51,6 +51,14 @@ class TaskOutput:
         """检查执行是否成功"""
         return self.data.get("status") != "error"
 
+    def to_dict(self) -> Dict[str, Any]:
+        """序列化为 dict（用于 Checkpoint 持久化）"""
+        return {
+            "phase": self.phase.value,
+            "data": self.data,
+            "metadata": self.metadata,
+        }
+
 
 @dataclass
 class ProviderConfig:
