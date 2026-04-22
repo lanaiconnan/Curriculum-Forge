@@ -10,6 +10,7 @@ HarnessProvider
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from providers.base import (
@@ -25,14 +26,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ── Lightweight Harness Types（避免直接依赖 services/harness.py）─────────────
+# ── Harness Types ─────────────────────────────────────────────────────────────
 
-class Verdict:
-    PASS    = "pass"
-    FAIL    = "fail"
-    PARTIAL = "partial"
-    SKIP    = "skip"
-    ERROR   = "error"
+VERDICT_PASS    = "pass"
+VERDICT_FAIL    = "fail"
+VERDICT_PARTIAL = "partial"
+VERDICT_SKIP    = "skip"
+VERDICT_ERROR   = "error"
 
 
 @dataclass
@@ -45,7 +45,7 @@ class HarnessCase:
     tags: List[str] = field(default_factory=list)
 
 
-@dataclass 
+@dataclass
 class HarnessResult:
     """单个用例结果"""
     case_id: str
@@ -63,8 +63,8 @@ class HarnessReport:
     failed: int
     results: List[HarnessResult]
 
-from dataclasses import dataclass, field
 
+# ── HarnessProvider ────────────────────────────────────────────────────────────
 
 class HarnessProvider(TaskProvider):
     """
@@ -94,18 +94,19 @@ class HarnessProvider(TaskProvider):
         """
         执行 Harness 测试。
         
-        当前实现：静态测试用例生成。
+        当前实现：静态测试用例生成 + 模拟执行。
         TODO: 接入 services/harness.py 的完整 HarnessRunner。
         """
         curriculum = runtime._record.state_data.get("curriculum", {})
-        modules = curriculum.get("modules", []) if curriculum else []
+        modules = curriculum.get("data", {}).get("curriculum", {}).get("modules", []) \
+                 if curriculum else []
         harness_cases = config.get("harness_cases", [])
         
         # 如果 config 没有 harness_cases，从 modules 生成
         if not harness_cases and modules:
             harness_cases = self._generate_from_modules(modules)
         
-        # 模拟执行（实际应调用 services/harness.py）
+        # 模拟执行（TODO: 替换为真实 HarnessRunner）
         results = self._run_mock(harness_cases)
         report = self._build_report(results)
         
@@ -153,16 +154,14 @@ class HarnessProvider(TaskProvider):
         """
         模拟 Harness 执行。
         
-        TODO: 替换为真实 HarnessRunner 调用。
+        TODO: 替换为真实 HarnessRunner 调用
+              (from services.harness import HarnessRunner)
         当前按 80% pass rate 随机模拟。
         """
         import random
         results = []
         for case in cases:
-            if random.random() < 0.8:
-                verdict = Verdict.PASS
-            else:
-                verdict = Verdict.FAIL
+            verdict = VERDICT_PASS if random.random() < 0.8 else VERDICT_FAIL
             results.append(HarnessResult(
                 case_id=case.id,
                 verdict=verdict,
@@ -172,8 +171,8 @@ class HarnessProvider(TaskProvider):
         return results
     
     def _build_report(self, results: List[HarnessResult]) -> HarnessReport:
-        passed = sum(1 for r in results if r.verdict == Verdict.PASS)
-        failed = sum(1 for r in results if r.verdict == Verdict.FAIL)
+        passed = sum(1 for r in results if r.verdict == VERDICT_PASS)
+        failed = sum(1 for r in results if r.verdict == VERDICT_FAIL)
         return HarnessReport(
             total=len(results),
             passed=passed,

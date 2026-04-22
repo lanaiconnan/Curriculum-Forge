@@ -20,7 +20,6 @@ from providers.base import (
     TaskPhase,
     TaskProvider,
     TaskOutput,
-    ProviderRegistry,
 )
 from runtimes.checkpoint_store import CheckpointRecord, CheckpointStore
 
@@ -50,9 +49,10 @@ class AdaptiveRuntime:
     """
     
     config: PipelineConfig
-    checkpoint_store: CheckpointStore = field(default_factory=None)
-    _record: CheckpointRecord = field(default=None, init=False)
+    checkpoint_store: CheckpointStore = field(default=None)
+    _record: Optional[CheckpointRecord] = field(default=None, init=False)
     _interactive_queue: asyncio.Queue = field(default_factory=None, init=False)
+    _provider_index: int = field(default=0, init=False)  # 记录已完成的 Provider 索引
     
     def __post_init__(self):
         if self.checkpoint_store is None:
@@ -68,7 +68,7 @@ class AdaptiveRuntime:
         按 Provider 顺序执行，状态自动保存到 CheckpointStore。
         遇到 WaitingForInput 时：
           - interactive=True：暂停等待外部输入
-          - interactive=False：自动跳过或报错
+          - interactive=False：自动跳过
         
         Args:
             config: 运行时配置（覆盖 profile 中的默认值）
@@ -79,7 +79,7 @@ class AdaptiveRuntime:
         Raises:
             RuntimeError: Pipeline 执行失败
         """
-        final_config = config or {}
+        run_config = config or {}
         run_id = self.checkpoint_store.new_id()
         
         self._record = CheckpointRecord(
@@ -88,17 +88,19 @@ class AdaptiveRuntime:
             profile=self.config.profile,
             phase=TaskPhase.CURRICULUM.value,
             state=RunState.RUNNING,
-            config=final_config,
+            config=run_config,
             state_data={},
             metrics={"providers_run": 0, "providers_succeeded": 0},
         )
         self._save()
         
-        providers_to_run = self._resolve_providers()
+        providers_to_run = self.config.providers
+        self._provider_index = 0
         
         try:
-            for provider in providers_to_run:
-                output = await self._execute_provider(provider, final_config)
+            for idx, provider in enumerate(providers_to_run):
+                self._provider_index = idx
+                output = await self._execute_provider(provider, run_config)
                 self._record.state_data[provider.phase.value] = output.to_dict()
                 self._record.metrics["providers_run"] += 1
                 if output.ok:
@@ -112,10 +114,9 @@ class AdaptiveRuntime:
                     self._save()
                     if self.config.interactive:
                         user_input = await self._interactive_queue.get()
-                        final_config.update(user_input)
+                        run_config.update(user_input)
                     else:
-                        # 非交互模式：视为完成，跳过等待
-                        pass
+                        pass  # 非交互模式：视为继续
             
             self._record.state = RunState.COMPLETED
             self._record.finished_at = datetime.now(timezone.utc).isoformat()
@@ -127,7 +128,7 @@ class AdaptiveRuntime:
             self._record.metrics["error"] = str(e)
             self._record.finished_at = datetime.now(timezone.utc).isoformat()
             self._save()
-            raise RuntimeError(f"Pipeline failed: {e}") from e
+            raise RuntimeError(f"Pipeline failed at phase {self._record.phase}: {e}") from e
     
     async def resume(
         self,
@@ -136,6 +137,9 @@ class AdaptiveRuntime:
     ) -> CheckpointRecord:
         """
         从 Checkpoint 恢复执行。
+        
+        读取保存的 state_data，跳过已完成的 Provider 阶段，
+        从第一个未完成阶段继续。
         
         Args:
             run_id: 要恢复的运行 ID
@@ -148,8 +152,6 @@ class AdaptiveRuntime:
         if not saved:
             raise ValueError(f"Checkpoint not found: {run_id}")
         
-        self._record = saved
-        
         if saved.state == RunState.COMPLETED:
             print(f"Run already completed: {run_id}")
             return saved
@@ -157,19 +159,49 @@ class AdaptiveRuntime:
         if saved.state not in (RunState.RUNNING, RunState.WAITING):
             raise ValueError(f"Cannot resume run in state: {saved.state.value}")
         
-        # 找到上次中断的阶段
+        self._record = saved
+        
+        # 确定已完成的阶段
+        completed_phases = set(saved.state_data.keys())
+        providers_to_run = [
+            p for p in self.config.providers
+            if p.phase.value not in completed_phases
+        ]
+        
+        print(f"Resuming from {len(completed_phases)} completed phases...")
+        print(f"Remaining providers: {[p.phase.value for p in providers_to_run]}")
+        
         resume_config = {**saved.config, **(config or {})}
         
         try:
-            # Re-run all providers from the beginning
-            # (In full implementation would resume from checkpoint)
-            return await self.run(resume_config)
+            for provider in providers_to_run:
+                self._record.phase = provider.phase.value
+                self._record.state = RunState.RUNNING
+                output = await self._execute_provider(provider, resume_config)
+                self._record.state_data[provider.phase.value] = output.to_dict()
+                self._record.metrics["providers_run"] += 1
+                if output.ok:
+                    self._record.metrics["providers_succeeded"] += 1
+                self._save()
+                
+                if output.metadata.get("waiting"):
+                    self._record.state = RunState.WAITING
+                    self._save()
+                    if self.config.interactive:
+                        user_input = await self._interactive_queue.get()
+                        resume_config.update(user_input)
+            
+            self._record.state = RunState.COMPLETED
+            self._record.finished_at = datetime.now(timezone.utc).isoformat()
+            self._save()
+            return self._record
+            
         except Exception as e:
             self._record.state = RunState.FAILED
             self._record.metrics["error"] = str(e)
             self._record.finished_at = datetime.now(timezone.utc).isoformat()
             self._save()
-            raise
+            raise RuntimeError(f"Resume failed: {e}") from e
     
     # ── Provider Execution ────────────────────────────────────────────────
     
@@ -183,10 +215,6 @@ class AdaptiveRuntime:
         output = await provider.execute(config, self)
         await provider.after_execute(output, self)
         return output
-    
-    def _resolve_providers(self) -> List[TaskProvider]:
-        """根据 profile 配置解析要运行的 Provider 顺序"""
-        return self.config.providers
     
     def _save(self) -> None:
         """保存 Checkpoint（auto_save=True 时）"""
@@ -217,4 +245,5 @@ class AdaptiveRuntime:
             "phase": self._record.phase,
             "profile": self._record.profile,
             "providers_run": self._record.metrics.get("providers_run", 0),
+            "providers_succeeded": self._record.metrics.get("providers_succeeded", 0),
         }

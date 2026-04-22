@@ -192,7 +192,11 @@ class ProviderRegistry:
         return self._providers.get(phase)
     
     def list(self) -> List[TaskProvider]:
-        """列出所有 Provider（按 phase 顺序）"""
+        """
+        列出所有 Provider（按 phase 顺序：curriculum→harness→memory→review）。
+        
+        TaskPhase 值字母序即执行顺序：curriculum < harness < memory < review。
+        """
         return sorted(self._all, key=lambda p: p.phase.value)
     
     def list_by_phase(self) -> Dict[TaskPhase, TaskProvider]:
