@@ -83,6 +83,13 @@ async def _publish_event(job_id: str, event: Dict[str, Any]) -> None:
         await queue.put(json.dumps(event, ensure_ascii=False))
 
 
+def _emit_coordinator_event(app, event_type: str, payload: Dict[str, Any]) -> None:
+    """Emit a coordinator event to /coordinator/events SSE subscribers (sync-safe)."""
+    coordinator = getattr(app.state, "coordinator", None)
+    if coordinator is not None and coordinator.event_bus is not None:
+        coordinator.event_bus.emit_sync(event_type, payload)
+
+
 # ── App Factory ───────────────────────────────────────────────────────────────
 
 def create_app(
@@ -219,6 +226,10 @@ def create_app(
                 description=proposal.get("description", ""),
             )
             store.save(record)
+            _emit_coordinator_event(
+                app, "job_created",
+                {"job_id": run_id, "profile": record.profile, "status": record.state.value}
+            )
             return {"job": _record_to_api(record), "created": True}
 
         # ── Path 2: Profile name ────────────────────────────────────────────
@@ -251,6 +262,10 @@ def create_app(
             description=body.get("description", f"Job from profile '{profile_name}'"),
         )
         store.save(record)
+        _emit_coordinator_event(
+            app, "job_created",
+            {"job_id": run_id, "profile": profile_name, "status": "pending"}
+        )
         return {"job": _record_to_api(record), "created": True}
 
     @app.get("/jobs/{job_id}", tags=["jobs"])
@@ -283,7 +298,10 @@ def create_app(
         # Run in background
         task = asyncio.create_task(_run_job_background(job_id, app))
         app.state._running_jobs[job_id] = task
-
+        _emit_coordinator_event(
+            app, "job_status_changed",
+            {"job_id": job_id, "status": "running"}
+        )
         return {"job": _record_to_api(record), "resumed": True}
 
     @app.post("/jobs/{job_id}/abort", tags=["jobs"])
@@ -305,7 +323,10 @@ def create_app(
         store.save(record)
 
         await _publish_event(job_id, {"event": "abort", "job_id": job_id})
-
+        _emit_coordinator_event(
+            app, "job_status_changed",
+            {"job_id": job_id, "status": "cancelled"}
+        )
         return {"job": _record_to_api(record), "aborted": True}
 
     @app.get("/jobs/{job_id}/stream", tags=["jobs"])
@@ -607,11 +628,16 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                     "event": "done",
                     "state": updated.state.value,
                 })
+                _emit_coordinator_event(
+                    app, "job_completed",
+                    {"job_id": job_id, "status": updated.state.value}
+                )
                 break
 
     except asyncio.CancelledError:
         logger.info(f"[{job_id}] Job cancelled")
         await _publish_event(job_id, {"event": "cancelled"})
+        _emit_coordinator_event(app, "job_status_changed", {"job_id": job_id, "status": "cancelled"})
     except Exception as exc:
         logger.exception(f"[{job_id}] Job failed: {exc}")
         # Mark record as failed
@@ -621,6 +647,7 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
             record.finished_at = datetime.now(timezone.utc).isoformat()
             store.save(record)
         await _publish_event(job_id, {"event": "error", "error": str(exc)})
+        _emit_coordinator_event(app, "job_failed", {"job_id": job_id, "error": str(exc)})
     finally:
         # Cleanup
         if job_id in app.state._running_jobs:

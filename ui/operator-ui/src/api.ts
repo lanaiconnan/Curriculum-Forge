@@ -105,17 +105,84 @@ export async function getStats(): Promise<Record<string, unknown>> {
   return res.json();
 }
 
-// SSE subscription
-export function subscribeJob(id: string, onEvent: (data: Record<string, unknown>) => void) {
-  const es = new EventSource(`${API_BASE}/jobs/${id}/stream`);
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      onEvent(data);
-    } catch { /* ignore parse errors */ }
+// ── SSE Utilities ─────────────────────────────────────────────────────────────
+
+const MAX_RETRIES = 5;
+
+/**
+ * Open an SSE connection with automatic exponential-backoff reconnection.
+ * Returns a cleanup function. onError is called after MAX_RETRIES exhausted.
+ */
+export function openSSE(
+  url: string,
+  handlers: {
+    onMessage: (data: Record<string, unknown>) => void;
+    onError?: (err: Event) => void;
+    onConnect?: () => void;
+    onDisconnect?: () => void;
+  },
+): () => void {
+  const { onMessage, onError, onConnect, onDisconnect } = handlers;
+
+  let es: EventSource;
+  let retries = 0;
+  let destroyed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const connect = () => {
+    if (destroyed) return;
+    es = new EventSource(url);
+
+    es.onopen = () => {
+      retries = 0;
+      onConnect?.();
+    };
+
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data) as Record<string, unknown>;
+        if (data == null) return; // skip keepalive comment lines
+        onMessage(data);
+      } catch { /* ignore */ }
+    };
+
+    es.onerror = (err) => {
+      if (destroyed) return;
+      es.close();
+      if (retries < MAX_RETRIES) {
+        const delay = Math.min(500 * Math.pow(2, retries), 15000);
+        retries++;
+        reconnectTimer = setTimeout(connect, delay);
+      } else {
+        onError?.(err);
+        onDisconnect?.();
+      }
+    };
   };
-  es.onerror = () => {
-    // Reconnect handled by browser
+
+  connect();
+
+  return () => {
+    destroyed = true;
+    if (reconnectTimer != null) clearTimeout(reconnectTimer);
+    es?.close();
+    onDisconnect?.();
   };
-  return () => es.close();
+}
+
+/** Legacy compat — delegates to openSSE */
+export function subscribeJob(id: string, onEvent: (data: Record<string, unknown>) => void): () => void {
+  return openSSE(`${API_BASE}/jobs/${id}/stream`, { onMessage: onEvent });
+}
+
+/** Subscribe to global coordinator events (all job/workflow status changes) */
+export function subscribeCoordinatorEvents(
+  onEvent: (data: Record<string, unknown>) => void,
+  handlers?: { onError?: (err: Event) => void; onDisconnect?: () => void },
+): () => void {
+  return openSSE(`${API_BASE}/coordinator/events`, {
+    onMessage: onEvent,
+    onError: handlers?.onError,
+    onDisconnect: handlers?.onDisconnect,
+  });
 }

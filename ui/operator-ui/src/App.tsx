@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   listJobs, getJob, createJob, resumeJob, abortJob,
-  listProfiles, healthCheck, subscribeJob,
+  listProfiles, healthCheck, subscribeJob, subscribeCoordinatorEvents,
   type Job, type Profile,
 } from './api';
 
@@ -329,6 +329,30 @@ export default function App() {
       setProfiles(list);
     } catch { /* profiles optional */ }
   }, []);
+
+  // ── SSE: subscribe to coordinator events for real-time job updates ──
+  useEffect(() => {
+    if (!gatewayHealth) return; // wait until gateway is confirmed up
+    const unsub = subscribeCoordinatorEvents(
+      (event) => {
+        const et = event.event_type || event.type;
+        if (et === 'job_created') {
+          // Optimistically refresh the full list so new jobs appear immediately
+          loadJobs();
+        } else if (et === 'job_status_changed' || et === 'job_completed' || et === 'job_failed') {
+          const jobId = (event.job_id || event.jobId) as string;
+          if (!jobId) return;
+          // Refresh just this job
+          getJob(jobId).then((updated) => {
+            setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
+            if (selectedJob?.id === updated.id) setSelectedJob(updated);
+          }).catch(() => {});
+        }
+      },
+      { onDisconnect: () => {/* silently reconnect */ } },
+    );
+    return unsub;
+  }, [gatewayHealth, loadJobs, selectedJob?.id]);
 
   useEffect(() => {
     const init = async () => {
