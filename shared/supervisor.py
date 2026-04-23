@@ -23,6 +23,11 @@ import os
 import sys
 import threading
 
+from providers.base import RunState
+
+# Backward-compatible alias: TaskStatus → RunState
+TaskStatus = RunState
+
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -36,15 +41,6 @@ class WorkerRole(Enum):
     GENERATOR = "generator"   # 生成者
     EXECUTOR = "executor"     # 执行者
     REFLECTOR = "reflector"   # 反思者
-
-
-class TaskStatus(Enum):
-    """任务状态"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
 
 
 @dataclass

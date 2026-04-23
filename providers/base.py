@@ -37,6 +37,7 @@ class RunState(Enum):
     COMPLETED  = "completed"
     FAILED     = "failed"
     CANCELLED  = "cancelled"
+    TIMEOUT    = "timeout"
 
 
 @dataclass

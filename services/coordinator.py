@@ -22,17 +22,12 @@ import uuid
 import logging
 import asyncio
 
+from providers.base import RunState
+
+# Backward-compatible alias: TaskStatus → RunState
+TaskStatus = RunState
+
 logger = logging.getLogger(__name__)
-
-
-class TaskStatus(Enum):
-    """Task execution status"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    TIMEOUT = "timeout"
 
 
 class AgentRole(Enum):
