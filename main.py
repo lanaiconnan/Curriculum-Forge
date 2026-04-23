@@ -509,54 +509,83 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # 单 Agent 模式（测试）
+  # Gateway mode (HTTP API + Web UI on port 8765)
+  python main.py --gateway
+  python main.py --gateway --port 8080
+
+  # Single Agent mode (test)
   python main.py --mode single --iterations 5
-  
-  # 双 Agent 协作（完整训练）
+
+  # Dual Agent mode (full training)
   python main.py --mode dual --iterations 10
-  
-  # 使用 GAE 而非 GRPO
+
+  # Use GAE instead of GRPO
   python main.py --mode dual --iterations 10 --no-grpo
-  
-  # 自定义时间预算（5分钟实验，30分钟迭代）
+
+  # Custom time budget (5min experiment, 30min iteration)
   python main.py --mode dual --iterations 10 --exp-time 300 --iter-time 1800
-  
-  # 禁用时间预算
+
+  # Disable time budget
   python main.py --mode dual --iterations 10 --no-time-budget
         """
     )
+
+    # Gateway mode
+    parser.add_argument("--gateway", action="store_true",
+                        help="Start Gateway HTTP service (API + Web UI)")
+    parser.add_argument("--port", type=int, default=8765,
+                        help="Gateway port (default: 8765)")
+    parser.add_argument("--host", default="0.0.0.0",
+                        help="Gateway host (default: 0.0.0.0)")
+    parser.add_argument("--reload", action="store_true",
+                        help="Enable auto-reload for Gateway (dev mode)")
+
+    # Training mode
     parser.add_argument("--mode", choices=["single", "dual"], default="dual",
-                        help="运行模式")
+                        help="Run mode")
     parser.add_argument("--workspace", default="workspace",
-                        help="工作区路径")
+                        help="Workspace path")
     parser.add_argument("--iterations", type=int, default=10,
-                        help="迭代次数")
+                        help="Number of iterations")
     parser.add_argument("--no-grpo", action="store_true",
-                        help="使用 GAE 而非 GRPO")
-    
-    # 时间预算参数
+                        help="Use GAE instead of GRPO")
+
+    # Time budget
     parser.add_argument("--exp-time", type=int, default=300,
-                        help="单次实验的最大时间（秒），默认 300")
+                        help="Max time per experiment in seconds (default: 300)")
     parser.add_argument("--iter-time", type=int, default=1800,
-                        help="单次迭代的最大时间（秒），默认 1800")
+                        help="Max time per iteration in seconds (default: 1800)")
     parser.add_argument("--no-time-budget", action="store_true",
-                        help="禁用时间预算")
-    
-    # Scratchpad 参数
+                        help="Disable time budget")
+
+    # Scratchpad
     parser.add_argument("--no-scratchpad", action="store_true",
-                        help="禁用 Scratchpad 日志")
-    
-    # 验证参数
+                        help="Disable Scratchpad logging")
+
+    # Verification
     parser.add_argument("--no-verification", action="store_true",
-                        help="禁用验证机制")
-    
-    # 离线模式
+                        help="Disable verification mechanism")
+
+    # Offline mode
     parser.add_argument("--offline", action="store_true",
-                        help="离线模式（使用模拟 LLM 响应）")
-    
+                        help="Offline mode (use mock LLM responses)")
+
     args = parser.parse_args()
-    
-    # 配置时间预算
+
+    # ── Gateway Mode ────────────────────────────────────────────────────────────
+    if args.gateway:
+        import uvicorn
+        from runtimes.gateway import create_app
+        print(f"\n⚡ Starting Curriculum-Forge Gateway")
+        print(f"   Host: {args.host}")
+        print(f"   Port: {args.port}")
+        print(f"   UI:   http://{args.host}:{args.port}")
+        print(f"   API:  http://{args.host}:{args.port}/docs")
+        app = create_app()
+        uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
+        sys.exit(0)
+
+    # ── Training Mode ───────────────────────────────────────────────────────────
     time_budget = None
     if not args.no_time_budget:
         time_budget = TimeBudget(
@@ -567,15 +596,13 @@ Examples:
         print(f"\n⏱ Time Budget Enabled:")
         print(f"   • Experiment: {args.exp_time}s")
         print(f"   • Iteration: {args.iter_time}s")
-    
-    # 配置本地 LLM
+
     llm_manager = None
     if args.offline:
-        from shared.local_llm import LocalLLMManager
         llm_manager = LocalLLMManager()
         llm_manager.enable_offline_mode()
         print(f"\n🔒 Offline mode enabled")
-    
+
     if args.mode == "single":
         run_single_with_toolrl(args.workspace, args.iterations)
     else:

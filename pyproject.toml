@@ -1,0 +1,10 @@
+[project]
+name = "dual-agent-tool-rl"
+version = "0.1.0"
+description = "Dual-Agent ToolRL System"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

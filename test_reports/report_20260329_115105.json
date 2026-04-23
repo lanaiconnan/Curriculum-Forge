@@ -1,0 +1,42 @@
+{
+  "title": "Curriculum-Forge \u5b9e\u9a8c\u62a5\u544a",
+  "timestamp": "2026-03-29 11:51:05",
+  "metrics": {
+    "total_experiments": 5,
+    "keep_rate": 0.6,
+    "avg_reward": 0.54,
+    "best_score": 108.3,
+    "stage_transitions": 2,
+    "final_stage": "intermediate",
+    "training_time": 245.5,
+    "timeout_count": 1
+  },
+  "findings": [
+    {
+      "type": "success",
+      "title": "\u9ad8\u4fdd\u7559\u7387",
+      "description": "\u4fdd\u7559\u7387\u8fbe\u5230 60.0%\uff0c\u8868\u73b0\u4f18\u79c0\u3002",
+      "recommendation": "\u7ee7\u7eed\u4fdd\u6301\u5f53\u524d\u7684\u8bad\u7ec3\u7b56\u7565\u3002"
+    },
+    {
+      "type": "warning",
+      "title": "\u5b58\u5728\u8d85\u65f6\u5b9e\u9a8c",
+      "description": "\u6709 1 \u4e2a\u5b9e\u9a8c\u8d85\u65f6\u3002",
+      "recommendation": "\u8003\u8651\u589e\u52a0\u65f6\u95f4\u9884\u7b97\u6216\u4f18\u5316\u5b9e\u9a8c\u6d41\u7a0b\u3002"
+    },
+    {
+      "type": "success",
+      "title": "\u591a\u9636\u6bb5\u5b66\u4e60",
+      "description": "\u5b8c\u6210\u4e86 2 \u6b21\u9636\u6bb5\u8f6c\u6362\u3002",
+      "recommendation": "\u8bfe\u7a0b\u5b66\u4e60\u6b63\u5728\u53d1\u6325\u4f5c\u7528\u3002"
+    }
+  ],
+  "recommendations": [
+    "\u589e\u52a0\u65f6\u95f4\u9884\u7b97\u6216\u4f18\u5316\u8bad\u7ec3\u6548\u7387"
+  ],
+  "next_steps": [
+    "\u8fdb\u5165 advanced \u9636\u6bb5\uff0c\u6311\u6218\u66f4\u9ad8\u96be\u5ea6",
+    "\u8fd0\u884c\u66f4\u591a\u8fed\u4ee3\u4ee5\u9a8c\u8bc1\u7a33\u5b9a\u6027",
+    "\u5bf9\u6bd4 GRPO vs GAE \u7684\u6548\u679c"
+  ]
+}

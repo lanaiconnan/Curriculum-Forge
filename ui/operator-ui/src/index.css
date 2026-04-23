@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-gray-900 border border-gray-800 rounded-lg;
+  }
+  .btn-primary {
+    @apply bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-md transition-colors;
+  }
+  .btn-secondary {
+    @apply bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-md transition-colors;
+  }
+  .badge {
+    @apply px-2 py-0.5 rounded text-xs font-medium;
+  }
+  .badge-pending  { @apply bg-gray-700 text-gray-300; }
+  .badge-running { @apply bg-blue-600 text-white animate-pulse; }
+  .badge-completed { @apply bg-emerald-600 text-white; }
+  .badge-failed   { @apply bg-red-600 text-white; }
+  .badge-waiting  { @apply bg-yellow-600 text-white; }
+}
