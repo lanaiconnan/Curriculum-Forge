@@ -12,9 +12,24 @@ from .feishu import (
     register_feishu_webhook,
 )
 
+from .weixin import (
+    WeixinAdapter,
+    WeixinConfig,
+    WeixinMessage,
+    WeixinError,
+    register_weixin_webhook,
+)
+
 __all__ = [
+    # Feishu
     "FeishuAdapter",
     "FeishuConfig",
     "FeishuError",
     "register_feishu_webhook",
+    # WeChat
+    "WeixinAdapter",
+    "WeixinConfig",
+    "WeixinMessage",
+    "WeixinError",
+    "register_weixin_webhook",
 ]
