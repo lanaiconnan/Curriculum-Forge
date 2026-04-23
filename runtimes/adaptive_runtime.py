@@ -24,6 +24,11 @@ from providers.base import (
 from runtimes.checkpoint_store import CheckpointRecord, CheckpointStore
 from runtimes.workspace import RunWorkspace
 
+# Lazy import to avoid circular dependency
+def _get_coordinator():
+    from services.coordinator import Coordinator
+    return Coordinator
+
 
 @dataclass
 class PipelineConfig:
@@ -57,11 +62,13 @@ class AdaptiveRuntime:
         checkpoint_store: CheckpointStore,
         service_container: Any = None,
         workspace: Optional[RunWorkspace] = None,
+        coordinator: Any = None,
     ):
         self.config = config
         self.checkpoint_store = checkpoint_store
         self.service_container = service_container  # May be None (standalone mode)
         self.workspace = workspace  # Per-run workspace isolation
+        self.coordinator = coordinator  # Optional: multi-agent Coordinator
         self._record: Optional[CheckpointRecord] = None
         self._interactive_queue = asyncio.Queue()
         self._provider_index: int = 0
@@ -298,11 +305,41 @@ class AdaptiveRuntime:
         """执行单个 Provider（含 before/after hook）。
 
         Provider 通过 runtime.service_container 访问 services/ 层。
+        执行完成后，若 coordinator 存在，通过 MessageQueue 通知其他 Agent。
         """
         await provider.before_execute(config, self)
         output = await provider.execute(config, self)
         await provider.after_execute(output, self)
+
+        # Notify coordinator if available
+        if self.coordinator is not None:
+            await self._notify_agents(provider.phase.value, output)
+
         return output
+
+    async def _notify_agents(self, phase: str, output: TaskOutput) -> None:
+        """通过 Coordinator 的 MessageQueue 通知其他 Agent。
+
+        发送 broadcast 消息，包含 phase 和 output 摘要。
+        其他 Agent 可以订阅此消息来触发后续操作。
+        """
+        try:
+            self.coordinator.message_queue.broadcast(
+                from_agent="runtime",
+                msg_type="provider_done",
+                payload={
+                    "phase": phase,
+                    "ok": output.ok,
+                    "data_keys": list(output.data.keys()) if output.data else [],
+                    "run_id": self._record.id if self._record else None,
+                },
+            )
+        except Exception as e:
+            # Notification failure should not break the pipeline
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Failed to notify agents: {e}"
+            )
 
     def _save(self) -> None:
         """保存 Checkpoint（auto_save=True 时）"""

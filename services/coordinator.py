@@ -116,6 +116,24 @@ class Message:
 
 
 @dataclass
+class DAGNode:
+    """A node in a DAG workflow.
+    
+    Unlike linear stages, DAG nodes support arbitrary dependency
+    relationships, enabling parallel execution where possible.
+    """
+    id: str
+    name: str
+    task_ids: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)  # Node IDs this depends on
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def is_ready(self, completed_nodes: set) -> bool:
+        """Check if this node's dependencies are satisfied."""
+        return all(dep in completed_nodes for dep in self.dependencies)
+
+
+@dataclass
 class Workflow:
     """
     A coordinated workflow involving multiple agents.
@@ -126,8 +144,12 @@ class Workflow:
     name: str
     description: str
     
-    stages: List[str] = field(default_factory=list)  # Stage names
-    stage_tasks: Dict[str, List[str]] = field(default_factory=dict)  # stage -> task IDs
+    stages: List[str] = field(default_factory=list)  # Stage names (legacy, linear)
+    stage_tasks: Dict[str, List[str]] = field(default_factory=dict)  # stage -> task IDs (legacy)
+    
+    # DAG support (Phase 2 Item 3)
+    dag_nodes: Dict[str, DAGNode] = field(default_factory=dict)  # node_id → DAGNode
+    _use_dag: bool = False  # Internal flag: True when add_dag_node() is used
     
     tasks: Dict[str, Task] = field(default_factory=dict)
     agents: Dict[str, AgentInfo] = field(default_factory=dict)
@@ -140,15 +162,39 @@ class Workflow:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def add_task(self, task: Task, stage: str) -> None:
-        """Add a task to a specific stage"""
+        """Add a task to a specific stage (linear, backward-compatible)."""
         self.tasks[task.id] = task
         if stage not in self.stage_tasks:
             self.stage_tasks[stage] = []
             self.stages.append(stage)
         self.stage_tasks[stage].append(task.id)
     
+    def add_dag_node(self, node: DAGNode) -> None:
+        """Add a DAG node to the workflow.
+        
+        When DAG nodes are used, get_ready_tasks() uses DAG topology
+        instead of linear stage ordering.
+        """
+        self.dag_nodes[node.id] = node
+        self._use_dag = True
+        
+        # Register tasks that belong to this node
+        for task_id in node.task_ids:
+            if task_id in self.tasks:
+                # Add node-level dependencies as task-level dependencies
+                for dep_node_id in node.dependencies:
+                    dep_node = self.dag_nodes.get(dep_node_id)
+                    if dep_node:
+                        for dep_task_id in dep_node.task_ids:
+                            if dep_task_id not in self.tasks[task_id].dependencies:
+                                self.tasks[task_id].dependencies.append(dep_task_id)
+    
     def get_ready_tasks(self, completed: set) -> List[Task]:
-        """Get tasks that are ready to execute"""
+        """Get tasks that are ready to execute.
+        
+        If DAG nodes are defined, uses DAG topology.
+        Otherwise, uses linear stage ordering.
+        """
         ready = []
         for task in self.tasks.values():
             if task.status == TaskStatus.PENDING and not task.is_blocked(completed):
@@ -368,6 +414,9 @@ class Coordinator:
         # Task handlers registered by type
         self._handlers: Dict[str, Callable[[Task], Dict[str, Any]]] = {}
         
+        # Role runtimes for direct execution
+        self._roles: Dict[str, Any] = {}  # agent_id → RoleRuntime
+        
         # Callbacks
         self._on_task_complete: Optional[Callable[[Task], None]] = None
         self._on_workflow_complete: Optional[Callable[[Workflow], None]] = None
@@ -394,6 +443,17 @@ class Coordinator:
     def register_agent(self, agent: AgentInfo) -> None:
         """Register an agent with the coordinator"""
         self._registry.register(agent)
+    
+    def register_role(self, role: Any) -> None:
+        """Register a RoleRuntime as an agent.
+        
+        Converts the role to an AgentInfo, registers it,
+        and stores the role for direct execution routing.
+        """
+        agent_info = role.to_agent_info()
+        self._registry.register(agent_info)
+        self._roles[agent_info.id] = role
+        logger.info(f"Registered role: {role.name} → agent {agent_info.id}")
     
     def unregister_agent(self, agent_id: str) -> bool:
         """Unregister an agent"""
@@ -423,6 +483,10 @@ class Coordinator:
         self._workflows[workflow.id] = workflow
         logger.info(f"Created workflow: {workflow.name} ({workflow.id})")
         return workflow
+    
+    def get_workflow(self, workflow_id: str) -> Optional[Workflow]:
+        """Get a workflow by ID (public accessor)."""
+        return self._workflows.get(workflow_id)
     
     def add_task(self, workflow: Workflow, task: Task, stage: str) -> None:
         """Add a task to a workflow"""
@@ -487,10 +551,33 @@ class Coordinator:
     async def _execute_task_async(self, task: Task) -> Dict[str, Any]:
         """Execute a task using registered handler (async-aware)
         
+        Priority:
+        1. If the assigned agent has a RoleRuntime, call role.work()
+        2. If a handler is registered for the task type, use it
+        3. Raise ValueError
+        
         If the handler is a coroutine function, await it directly.
         If it's a regular function, run it in the default executor to avoid
         blocking the event loop.
         """
+        # Priority 1: Role-based execution
+        if task.assigned_agent and task.assigned_agent in self._roles:
+            role = self._roles[task.assigned_agent]
+            from roles.role_runtime import RoleTask, RolePhase
+            role_task = RoleTask(
+                id=task.id,
+                description=task.payload.get("description", ""),
+                phase_hint=task.type,
+            )
+            report = await role.work(role_task)
+            return {
+                "status": "ok",
+                "role": role.name,
+                "output": report.output,
+                "metrics": report.metrics,
+            }
+        
+        # Priority 2: Handler-based execution
         handler = self._handlers.get(task.type)
         
         if not handler:

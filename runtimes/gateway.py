@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -105,6 +106,15 @@ def create_app(
     # ── Bridge（Channel → Job）──────────────────────────────────────────
     _, _, create_bridge = _get_bridge()
     app.state.bridge = create_bridge(gateway_url="http://localhost:8765")
+
+    # ── Coordinator (Multi-Agent) ───────────────────────────────────────────
+    try:
+        from runtimes.pipeline_factory import create_coordinator
+        app.state.coordinator = create_coordinator()
+        logger.info("Coordinator initialized with default agents")
+    except Exception as e:
+        logger.warning(f"Coordinator initialization skipped: {e}")
+        app.state.coordinator = None
 
     # ── CORS ────────────────────────────────────────────────────────────────
 
@@ -357,6 +367,125 @@ def create_app(
         """Gateway statistics."""
         store = app.state.store
         return store.summary()
+
+    # ── Coordinator API (Multi-Agent) ─────────────────────────────────────────
+
+    @app.get("/agents", tags=["agents"])
+    async def list_agents():
+        """List all registered agents."""
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            return {"agents": [], "total": 0}
+        agents = coordinator.agents.list_all()
+        return {
+            "agents": [
+                {
+                    "id": a.id,
+                    "name": a.name,
+                    "role": a.role.value,
+                    "status": a.status,
+                    "capabilities": a.capabilities,
+                    "current_task": a.current_task,
+                }
+                for a in agents
+            ],
+            "total": len(agents),
+        }
+
+    @app.get("/workflows", tags=["workflows"])
+    async def list_workflows():
+        """List all workflows."""
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            return {"workflows": [], "total": 0}
+        status = coordinator.get_status()
+        workflows = status.get("workflows", {})
+        return {
+            "workflows": [
+                {
+                    "id": wid,
+                    "name": info["name"],
+                    "status": info["status"],
+                    "tasks": info["tasks"],
+                }
+                for wid, info in workflows.items()
+            ],
+            "total": len(workflows),
+        }
+
+    @app.get("/workflows/{workflow_id}", tags=["workflows"])
+    async def get_workflow(workflow_id: str):
+        """Get a single workflow's details."""
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            raise HTTPException(status_code=404, detail="No coordinator configured")
+        workflow = coordinator.get_workflow(workflow_id)
+        if workflow is None:
+            raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+        tasks = {
+            tid: {
+                "type": t.type,
+                "status": t.status.value,
+                "assigned_agent": t.assigned_agent,
+                "result": t.result,
+                "error": t.error,
+                "dependencies": t.dependencies,
+            }
+            for tid, t in workflow.tasks.items()
+        }
+        return {
+            "id": workflow.id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "current_stage": workflow.current_stage,
+            "tasks": tasks,
+            "created_at": workflow.created_at.isoformat() if workflow.created_at else None,
+            "started_at": workflow.started_at.isoformat() if workflow.started_at else None,
+            "completed_at": workflow.completed_at.isoformat() if workflow.completed_at else None,
+        }
+
+    @app.post("/workflows", tags=["workflows"], status_code=201)
+    async def create_workflow(request: Request):
+        """Create and start a new workflow."""
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            raise HTTPException(status_code=503, detail="No coordinator configured")
+        body = await request.json()
+        name = body.get("name", "unnamed")
+        description = body.get("description", "")
+        tasks = body.get("tasks", [])
+
+        workflow = coordinator.create_workflow(name=name, description=description)
+
+        for task_def in tasks:
+            from services.coordinator import Task
+            task = Task(
+                id=task_def.get("id", str(uuid.uuid4())),
+                type=task_def["type"],
+                payload=task_def.get("payload", {}),
+                priority=task_def.get("priority", 0),
+                dependencies=task_def.get("dependencies", []),
+            )
+            stage = task_def.get("stage", "default")
+            coordinator.add_task(workflow, task, stage)
+
+        # Start workflow in background
+        async def _run_workflow():
+            try:
+                await coordinator.run_workflow_async(workflow)
+            except Exception as e:
+                logger.exception(f"Workflow {workflow.id} failed: {e}")
+
+        asyncio.create_task(_run_workflow())
+
+        return {
+            "workflow": {
+                "id": workflow.id,
+                "name": workflow.name,
+                "tasks": len(workflow.tasks),
+            },
+            "created": True,
+        }
 
     # ── Static UI ────────────────────────────────────────────────────────────
 

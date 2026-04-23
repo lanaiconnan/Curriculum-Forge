@@ -201,23 +201,108 @@ async def run_job(
 
 # ── CLI Integration ──────────────────────────────────────────────────────────
 
+def create_coordinator(
+    container: Optional[ServiceContainer] = None,
+) -> Any:
+    """
+    Create and configure a Coordinator with role-based agents.
+
+    Creates Teacher, Learner, and Reviewer roles (with Provider bindings)
+    and registers them as agents in the Coordinator.
+
+    Args:
+        container: Optional ServiceContainer for handler access.
+
+    Returns:
+        Configured Coordinator instance.
+    """
+    from services.coordinator import Coordinator, AgentInfo, AgentRole
+    from roles.role_runtime import TeacherRole, LearnerRole, ReviewerRole
+
+    coordinator = Coordinator()
+
+    # Create roles with provider bindings
+    try:
+        from providers.curriculum_provider import CurriculumProvider
+        from providers.harness_provider import HarnessProvider
+        from providers.memory_provider import MemoryProvider
+        from providers.review_provider import ReviewProvider
+
+        teacher = TeacherRole(
+            provider=CurriculumProvider(),
+            service_container=container,
+        )
+        learner = LearnerRole(
+            harness_provider=HarnessProvider(),
+            memory_provider=MemoryProvider(),
+            service_container=container,
+        )
+        reviewer = ReviewerRole(
+            provider=ReviewProvider(),
+            service_container=container,
+        )
+    except ImportError:
+        # Fallback: no providers available
+        teacher = TeacherRole()
+        learner = LearnerRole()
+        reviewer = ReviewerRole()
+
+    # Register roles as agents
+    coordinator.register_role(teacher)
+    coordinator.register_role(learner)
+    coordinator.register_role(reviewer)
+
+    # Also register fallback handlers for task types
+    async def _handle_environment(task):
+        return {"task_id": task.id, "type": "environment", "status": "done"}
+
+    async def _handle_experiment(task):
+        return {"task_id": task.id, "type": "experiment", "status": "done"}
+
+    async def _handle_review(task):
+        return {"task_id": task.id, "type": "review", "status": "done"}
+
+    async def _handle_training(task):
+        return {"task_id": task.id, "type": "training", "status": "done"}
+
+    coordinator.register_handler("environment", _handle_environment)
+    coordinator.register_handler("experiment", _handle_experiment)
+    coordinator.register_handler("review", _handle_review)
+    coordinator.register_handler("training", _handle_training)
+
+    logger.info("Coordinator created with 3 roles (Provider-bound) and 4 fallback handlers")
+    return coordinator
+
+
 def create_runtime_from_profile(
     profile_name: str,
     checkpoint_store: Optional[CheckpointStore] = None,
     run_id: Optional[str] = None,
+    with_coordinator: bool = True,
 ) -> AdaptiveRuntime:
     """
     Create an AdaptiveRuntime for a given profile.
     Used by Gateway's _run_job_background().
+
+    Args:
+        profile_name: Profile name from profiles/ directory.
+        checkpoint_store: Optional override checkpoint store.
+        run_id: Optional run ID (for workspace isolation).
+        with_coordinator: Whether to attach a Coordinator for multi-agent.
     """
     config, container, store, workspace = create_pipeline(
         profile_name,
         run_id=run_id,
     )
 
+    coordinator = None
+    if with_coordinator:
+        coordinator = create_coordinator(container=container)
+
     return AdaptiveRuntime(
         config=config,
         service_container=container,
         checkpoint_store=checkpoint_store or store,
         workspace=workspace,
+        coordinator=coordinator,
     )
