@@ -30,6 +30,83 @@ TaskStatus = RunState
 logger = logging.getLogger(__name__)
 
 
+# ── Coordinator Event Bus ────────────────────────────────────────────────────
+
+class CoordinatorEventBus:
+    """Publish-subscribe event bus for Coordinator events.
+    
+    Enables Gateway and other subscribers to react to Coordinator
+    state changes (task assignment, completion, agent status, etc.)
+    without polling.
+    
+    Each subscriber gets its own asyncio.Queue. Events are broadcast
+    to all subscribers.
+    """
+    
+    def __init__(self):
+        self._subscribers: Dict[str, asyncio.Queue] = {}
+        self._counter: int = 0
+    
+    def subscribe(self, subscriber_id: Optional[str] = None) -> str:
+        """Subscribe to events. Returns the subscriber_id."""
+        if subscriber_id is None:
+            self._counter += 1
+            subscriber_id = f"sub_{self._counter}"
+        self._subscribers[subscriber_id] = asyncio.Queue()
+        logger.debug(f"EventBus subscriber added: {subscriber_id}")
+        return subscriber_id
+    
+    def unsubscribe(self, subscriber_id: str) -> None:
+        """Unsubscribe from events."""
+        self._subscribers.pop(subscriber_id, None)
+    
+    async def emit(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Emit an event to all subscribers."""
+        event = {
+            "type": event_type,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat(),
+        }
+        dead = []
+        for sid, queue in self._subscribers.items():
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning(f"EventBus subscriber {sid} queue full, dropping event")
+                dead.append(sid)
+        for sid in dead:
+            self._subscribers.pop(sid, None)
+    
+    def emit_sync(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Emit an event synchronously (safe from sync or async context).
+        
+        Puts the event directly into subscriber queues without awaiting.
+        This is safe because Queue.put_nowait() doesn't need an event loop.
+        """
+        event = {
+            "type": event_type,
+            "payload": payload,
+            "timestamp": datetime.now().isoformat(),
+        }
+        dead = []
+        for sid, queue in self._subscribers.items():
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning(f"EventBus subscriber {sid} queue full, dropping event")
+                dead.append(sid)
+        for sid in dead:
+            self._subscribers.pop(sid, None)
+    
+    def get_queue(self, subscriber_id: str) -> Optional[asyncio.Queue]:
+        """Get the queue for a subscriber."""
+        return self._subscribers.get(subscriber_id)
+    
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
+
+
 class AgentRole(Enum):
     """Agent roles in the coordinator"""
     PRODUCER = "producer"      # Generates tasks
@@ -424,6 +501,9 @@ class Coordinator:
         # Async coordination (lazily created to avoid Python 3.7 event-loop issues)
         self._condition: Optional[asyncio.Condition] = None
         self._running_async: Set[str] = set()  # task_ids currently executing in async mode
+        
+        # Event bus for SSE / external subscribers
+        self.event_bus: CoordinatorEventBus = CoordinatorEventBus()
     
     @property
     def condition(self) -> asyncio.Condition:
@@ -523,6 +603,12 @@ class Coordinator:
         task.assigned_agent = agent.id
         task.started_at = datetime.now()
         
+        # Emit event
+        self.event_bus.emit_sync("task_assigned", {
+            "task_id": task.id, "agent_id": agent.id,
+            "role": agent.role.value, "task_type": task.type,
+        })
+        
         # Send task message
         self._queue.send(Message(
             id=str(uuid.uuid4()),
@@ -616,7 +702,21 @@ class Coordinator:
         
         # Release agent
         if task.assigned_agent:
+            old_agent_id = task.assigned_agent
             self._registry.release_agent(task.assigned_agent)
+            # Emit agent status changed
+            self.event_bus.emit_sync("agent_status_changed", {
+                "agent_id": old_agent_id, "old_status": "busy", "new_status": "idle",
+            })
+        
+        # Emit task completion event
+        event_type = "task_completed" if not error else "task_failed"
+        self.event_bus.emit_sync(event_type, {
+            "task_id": task.id,
+            "agent_id": task.assigned_agent,
+            "result": result if not error else None,
+            "error": error,
+        })
         
         # Notify
         if self._on_task_complete:
@@ -632,6 +732,11 @@ class Coordinator:
             # Check workflow completion
             if workflow.is_complete():
                 workflow.completed_at = datetime.now()
+                self.event_bus.emit_sync("workflow_completed", {
+                    "workflow_id": workflow.id,
+                    "name": workflow.name,
+                    "status": "completed",
+                })
                 if self._on_workflow_complete:
                     self._on_workflow_complete(workflow)
         
@@ -673,6 +778,12 @@ class Coordinator:
         workflow.started_at = datetime.now()
         start = time.time()
         completed = set()
+        
+        # Emit workflow started event
+        await self.event_bus.emit("workflow_started", {
+            "workflow_id": workflow.id, "name": workflow.name,
+            "task_count": len(workflow.tasks),
+        })
         
         while True:
             # --- Check termination ---

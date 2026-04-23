@@ -73,6 +73,7 @@ def parse_command(text: str) -> ParsedCommand:
 
     支持的命令格式：
     - "run <topic>" 或 "run <topic> with <profile>"
+    - "workflow <name>" 或 "workflow <name> with <task_types>"
     - "status" 或 "status <job_id>"
     - "list" 或 "list <n>"
     - "log <job_id>"
@@ -107,6 +108,16 @@ def parse_command(text: str) -> ParsedCommand:
     if log_match:
         job_id = log_match.group(1)
         return ParsedCommand(action="log", job_id=job_id)
+
+    # ── workflow ────────────────────────────────────────────────────────────
+    # workflow <name>
+    # workflow <name> with <task_types>
+    wf_match = re.match(r"^workflow\s+(.+?)(?:\s+with\s+(.+))?$", text)
+    if wf_match:
+        name = wf_match.group(1).strip()
+        task_types_str = wf_match.group(2)
+        task_types = [t.strip() for t in task_types_str.split(",")] if task_types_str else None
+        return ParsedCommand(action="workflow", topic=name, extra={"task_types": task_types})
 
     # ── run ─────────────────────────────────────────────────────────────────
     # run <topic>
@@ -243,6 +254,9 @@ class ChannelJobBridge:
 
         if cmd.action == "run":
             return self._create_job_sync(cmd, message)
+
+        if cmd.action == "workflow":
+            return self._create_workflow_sync(cmd, message)
 
         # unknown
         return None
@@ -401,8 +415,10 @@ class ChannelJobBridge:
         cmd: ParsedCommand,
         message: Union[Dict[str, Any], Any],
     ) -> Optional[str]:
-        """异步执行命令（目前直接调用同步版本）"""
-        # 可以扩展为真正的异步实现
+        """异步执行命令"""
+        if cmd.action == "workflow":
+            return self._create_workflow_sync(cmd, message)
+        # Delegate to sync for other commands
         return self._execute_command_sync(cmd, message)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -419,15 +435,75 @@ class ChannelJobBridge:
 
         return "unknown"
 
+    def _create_workflow_sync(
+        self,
+        cmd: ParsedCommand,
+        message: Union[Dict[str, Any], Any],
+    ) -> str:
+        """同步创建 Workflow（多 Agent DAG 协作）"""
+        name = cmd.topic or "unnamed_workflow"
+        task_types = cmd.extra.get("task_types") or ["environment", "experiment", "review"]
+        user_id = self._extract_user_id(message)
+
+        try:
+            # Build DAG task definitions
+            tasks = []
+            for i, ttype in enumerate(task_types):
+                task_id = f"task_{ttype}_{i}"
+                deps = [f"task_{task_types[i-1]}_{i-1}"] if i > 0 else []
+                tasks.append({
+                    "id": task_id,
+                    "type": ttype,
+                    "payload": {
+                        "source": "channel",
+                        "user_id": user_id,
+                        "topic": name,
+                    },
+                    "dependencies": deps,
+                    "stage": ttype,
+                })
+
+            resp = self._http_sync.post(
+                f"{self.config.gateway_url}/workflows",
+                json={
+                    "name": name,
+                    "description": f"Workflow from channel: {name}",
+                    "tasks": tasks,
+                },
+                timeout=self.config.create_job_timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            wf = data.get("workflow", {})
+            wf_id = wf.get("id", "unknown")
+            task_count = wf.get("tasks", 0)
+
+            return f"✅ Workflow 已创建\nID: {wf_id}\n任务数: {task_count}\n类型: {', '.join(task_types)}\n执行中..."
+
+        except httpx.HTTPStatusError as e:
+            return f"❌ 创建 Workflow 失败: HTTP {e.response.status_code}"
+        except httpx.ConnectError:
+            return "❌ Gateway 未启动，请检查服务状态"
+        except Exception as e:
+            logger.error(f"创建 Workflow 失败: {e}")
+            return f"❌ 创建 Workflow 失败: {str(e)[:50]}"
+
     def _help_text(self) -> str:
         """返回帮助文本"""
         return """📚 可用命令：
 
-• run <topic> - 创建新任务
+• run <topic> - 创建新任务（自动路由到 Workflow）
   示例: run 机器学习基础
 
 • run <topic> with <profile> - 指定 profile 创建任务
   示例: run Python入门 with pure_harness
+
+• workflow <name> - 创建多 Agent Workflow
+  示例: workflow 双Agent训练
+
+• workflow <name> with <task_types> - 指定任务类型
+  示例: workflow 实验流程 with environment,experiment,review
 
 • status [job_id] - 查询任务状态
   示例: status

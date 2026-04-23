@@ -444,6 +444,65 @@ def create_app(
             "completed_at": workflow.completed_at.isoformat() if workflow.completed_at else None,
         }
 
+    # ── SSE: Workflow + Coordinator Events ──────────────────────────────────────
+
+    @app.get("/workflows/{workflow_id}/stream", tags=["workflows"])
+    async def stream_workflow(workflow_id: str):
+        """SSE stream for real-time workflow updates from Coordinator."""
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            raise HTTPException(status_code=503, detail="No coordinator configured")
+        
+        workflow = coordinator.get_workflow(workflow_id)
+        if workflow is None:
+            raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+        
+        async def _gen():
+            sub_id = coordinator.event_bus.subscribe()
+            queue = coordinator.event_bus.get_queue(sub_id)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=60.0)
+                        payload = event.get("payload", {})
+                        if payload.get("workflow_id") == workflow_id or event["type"] in ("task_assigned", "task_completed", "task_failed", "agent_status_changed"):
+                            yield sse_starlette.SSEEvent(data=json.dumps(event, ensure_ascii=False))
+                        
+                        if event["type"] == "workflow_completed" and payload.get("workflow_id") == workflow_id:
+                            break
+                    except asyncio.TimeoutError:
+                        yield sse_starlette.SSEEvent(data=": keepalive\n\n")
+            except (asyncio.CancelledError, GeneratorExit):
+                pass
+            finally:
+                coordinator.event_bus.unsubscribe(sub_id)
+        
+        return sse_starlette.EventSourceResponse(_gen())
+
+    @app.get("/coordinator/events", tags=["coordinator"])
+    async def stream_coordinator_events():
+        """SSE stream for ALL Coordinator events (global)."""
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            raise HTTPException(status_code=503, detail="No coordinator configured")
+        
+        async def _gen():
+            sub_id = coordinator.event_bus.subscribe()
+            queue = coordinator.event_bus.get_queue(sub_id)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=60.0)
+                        yield sse_starlette.SSEEvent(data=json.dumps(event, ensure_ascii=False))
+                    except asyncio.TimeoutError:
+                        yield sse_starlette.SSEEvent(data=": keepalive\n\n")
+            except (asyncio.CancelledError, GeneratorExit):
+                pass
+            finally:
+                coordinator.event_bus.unsubscribe(sub_id)
+        
+        return sse_starlette.EventSourceResponse(_gen())
+
     @app.post("/workflows", tags=["workflows"], status_code=201)
     async def create_workflow(request: Request):
         """Create and start a new workflow."""
