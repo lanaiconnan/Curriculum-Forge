@@ -47,6 +47,7 @@ logger = logging.getLogger("gateway")
 
 from providers.base import RunState, TaskPhase, TaskOutput
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
+from runtimes.workspace import RunWorkspace
 
 # ── Lazy Imports（避免循环导入）────────────────────────────────────────────────
 
@@ -307,6 +308,30 @@ def create_app(
 
         return event_generator(job_id)
 
+    @app.delete("/jobs/{job_id}/workspace", tags=["jobs"])
+    async def delete_workspace(job_id: str):
+        """Delete the per-run workspace directory for a job."""
+        store = app.state.store
+        record = store.load(job_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+
+        workspace = RunWorkspace(run_id=job_id, auto_create=False)
+        if not workspace.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Workspace for job '{job_id}' not found",
+            )
+
+        usage = workspace.disk_usage()
+        workspace.cleanup()
+
+        return {
+            "deleted": True,
+            "job_id": job_id,
+            "freed_bytes": usage.get("total_bytes", 0),
+        }
+
     # ── Profiles API ─────────────────────────────────────────────────────────
 
     @app.get("/profiles", tags=["profiles"])
@@ -372,6 +397,7 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
         runtime = create_runtime_from_profile(
             profile_name=record.profile,
             checkpoint_store=store,
+            run_id=job_id,
         )
 
         # Merge extra config from the job record
@@ -437,6 +463,7 @@ def _record_to_api(record: CheckpointRecord, include_state_data: bool = False) -
         "updated_at": getattr(record, "updated_at", record.created_at),
         "finished_at": record.finished_at,
         "metrics": record.metrics,
+        "workspace_dir": record.workspace_dir,
     }
     if include_state_data:
         result["config"] = record.config

@@ -22,6 +22,7 @@ from providers.base import (
     TaskOutput,
 )
 from runtimes.checkpoint_store import CheckpointRecord, CheckpointStore
+from runtimes.workspace import RunWorkspace
 
 
 @dataclass
@@ -55,10 +56,12 @@ class AdaptiveRuntime:
         config: PipelineConfig,
         checkpoint_store: CheckpointStore,
         service_container: Any = None,
+        workspace: Optional[RunWorkspace] = None,
     ):
         self.config = config
         self.checkpoint_store = checkpoint_store
         self.service_container = service_container  # May be None (standalone mode)
+        self.workspace = workspace  # Per-run workspace isolation
         self._record: Optional[CheckpointRecord] = None
         self._interactive_queue = asyncio.Queue()
         self._provider_index: int = 0
@@ -86,6 +89,7 @@ class AdaptiveRuntime:
             config=run_config,
             state_data={},
             metrics={"providers_run": 0, "providers_succeeded": 0},
+            workspace_dir=self.workspace.workspace_path() if self.workspace else None,
         )
         self._save()
 
@@ -184,6 +188,7 @@ class AdaptiveRuntime:
             config=run_config,
             state_data={},
             metrics={"providers_run": 0, "providers_succeeded": 0},
+            workspace_dir=self.workspace.workspace_path() if self.workspace else None,
         )
         self._save()
 

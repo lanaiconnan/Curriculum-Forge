@@ -40,6 +40,7 @@ class CheckpointRecord:
     metrics: Dict[str, Any]           # 统计指标
     description: str = ""            # 运行描述
     finished_at: Optional[str] = None  # 完成时间
+    workspace_dir: Optional[str] = None  # Per-run workspace directory
     
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（含 RunState enum 处理）"""

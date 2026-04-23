@@ -28,6 +28,7 @@ from services.learner import LearnerService, LearnerServiceConfig
 from services.container import ServiceContainer, ServiceRegistry, ServiceProvider
 from runtimes.adaptive_runtime import AdaptiveRuntime, PipelineConfig
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
+from runtimes.workspace import RunWorkspace, WORKSPACE_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +61,14 @@ def _build_provider_chain() -> List[TaskProvider]:
 
 # ── Service Container Builder ─────────────────────────────────────────────────
 
-def _build_service_container() -> ServiceContainer:
+def _build_service_container(workspace_dir: str = ".") -> ServiceContainer:
     """Build and initialize a service container with core services."""
     container = ServiceContainer()
 
     # EnvironmentService (Agent A - Producer)
     env_config = EnvironmentServiceConfig(
         name="environment",
-        workspace=".",
+        workspace=workspace_dir,
         max_tasks_beginner=2,
         max_tasks_intermediate=3,
         max_tasks_advanced=5,
@@ -77,7 +78,7 @@ def _build_service_container() -> ServiceContainer:
     # LearnerService (Agent B - Executor)
     learner_config = LearnerServiceConfig(
         name="learner",
-        workspace=".",
+        workspace=workspace_dir,
         max_iterations=3,
         llm_backend="mock",  # Use mock backend for provider execution
         llm_model="mock",
@@ -119,23 +120,35 @@ def create_pipeline(
     profile_name: str = "rl_controller",
     checkpoint_dir: Optional[Path] = None,
     providers: Optional[List[TaskProvider]] = None,
-) -> Tuple[PipelineConfig, ServiceContainer, CheckpointStore]:
+    run_id: Optional[str] = None,
+) -> Tuple[PipelineConfig, ServiceContainer, CheckpointStore, RunWorkspace]:
     """
-    Create a fully-wired pipeline.
+    Create a fully-wired pipeline with per-run workspace isolation.
 
     Returns:
-        (PipelineConfig, ServiceContainer, CheckpointStore)
+        (PipelineConfig, ServiceContainer, CheckpointStore, RunWorkspace)
 
     The returned AdaptiveRuntime can be used directly:
         runtime = AdaptiveRuntime(
             config=config,
             service_container=container,
             checkpoint_store=store,
+            workspace=workspace,
         )
     """
+    # Generate run_id if not provided
+    if run_id is None:
+        run_id = CheckpointStore.new_id()
+
     # Build components
     provider_chain = providers or _build_provider_chain()
-    container = _build_service_container()
+
+    # Create per-run workspace
+    workspace = RunWorkspace(run_id=run_id)
+
+    # Build service container with workspace isolation
+    container = _build_service_container(workspace_dir=workspace.workspace_path())
+
     store = CheckpointStore(base_dir=checkpoint_dir)
 
     # Load profile for config
@@ -154,9 +167,9 @@ def create_pipeline(
     config._service_container = container
     config._profile = profile
 
-    logger.info(f"Pipeline created: profile={profile_name}, providers={[p.__class__.__name__ for p in provider_chain]}")
+    logger.info(f"Pipeline created: profile={profile_name}, run_id={run_id}, workspace={workspace.root}")
 
-    return config, container, store
+    return config, container, store, workspace
 
 
 # ── Convenience: Run a single job end-to-end ──────────────────────────────────
@@ -171,12 +184,13 @@ async def run_job(
 
     Returns the final CheckpointRecord.
     """
-    config, container, store = create_pipeline(profile_name, checkpoint_dir)
+    config, container, store, workspace = create_pipeline(profile_name, checkpoint_dir)
 
     runtime = AdaptiveRuntime(
         config=config,
         service_container=container,
         checkpoint_store=store,
+        workspace=workspace,
     )
 
     run_config = {**(config._profile or {}), **(extra_config or {})}
@@ -190,15 +204,20 @@ async def run_job(
 def create_runtime_from_profile(
     profile_name: str,
     checkpoint_store: Optional[CheckpointStore] = None,
+    run_id: Optional[str] = None,
 ) -> AdaptiveRuntime:
     """
     Create an AdaptiveRuntime for a given profile.
     Used by Gateway's _run_job_background().
     """
-    config, container, store = create_pipeline(profile_name)
+    config, container, store, workspace = create_pipeline(
+        profile_name,
+        run_id=run_id,
+    )
 
     return AdaptiveRuntime(
         config=config,
         service_container=container,
         checkpoint_store=checkpoint_store or store,
+        workspace=workspace,
     )
