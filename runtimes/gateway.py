@@ -50,6 +50,12 @@ from providers.base import RunState, TaskPhase, TaskOutput
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
 from runtimes.workspace import RunWorkspace
 
+# ── ACP ───────────────────────────────────────────────────────────────────────
+
+def _get_acp_registry():
+    from acp.protocol import ACPSessionRegistry
+    return ACPSessionRegistry
+
 # ── Lazy Imports（避免循环导入）────────────────────────────────────────────────
 
 def _get_adaptive_runtime():
@@ -109,6 +115,10 @@ def create_app(
     app.state.store = checkpoint_store or CheckpointStore()
     app.state.ui_dir = ui_dir or (PROJECT_ROOT / "ui" / "operator-ui" / "dist")
     app.state._running_jobs: Dict[str, asyncio.Task] = {}
+
+    # ── ACP Registry ─────────────────────────────────────────────────────
+    ACPRegistry = _get_acp_registry()
+    app.state.acp_registry = ACPRegistry()
 
     # ── Bridge（Channel → Job）──────────────────────────────────────────
     _, _, create_bridge = _get_bridge()
@@ -566,6 +576,124 @@ def create_app(
             },
             "created": True,
         }
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ACP — Agent Control Protocol
+    # ════════════════════════════════════════════════════════════════════════
+
+    from acp.protocol import ACPAgent, ACPTask, ACPTaskStatus, ACPAgentStatus, new_task_id
+
+    @app.post("/acp/register", tags=["acp"], status_code=201)
+    async def acp_register(request: Request):
+        """Register an external ACP agent."""
+        body = await request.json()
+        agent_id = body.get("agent_id")
+        if not agent_id:
+            raise HTTPException(status_code=400, detail="agent_id is required")
+        agent = ACPAgent(
+            agent_id=agent_id,
+            name=body.get("name", agent_id),
+            role=body.get("role", "general"),
+            capabilities=body.get("capabilities", []),
+        )
+        session_id = app.state.acp_registry.register(agent)
+        logger.info(f"ACP registered: {agent_id}")
+        return {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "gateway_url": str(request.base_url).rstrip("/"),
+        }
+
+    @app.delete("/acp/{agent_id}", tags=["acp"])
+    async def acp_unregister(agent_id: str):
+        """Unregister an ACP agent."""
+        found = app.state.acp_registry.unregister(agent_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return {"agent_id": agent_id, "unregistered": True}
+
+    @app.get("/acp/{agent_id}", tags=["acp"])
+    async def acp_get_agent(agent_id: str):
+        """Get agent info."""
+        agent = app.state.acp_registry.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return agent.to_dict()
+
+    @app.get("/acp", tags=["acp"])
+    async def acp_list_agents():
+        """List all registered ACP agents."""
+        agents = app.state.acp_registry.list_agents()
+        return {
+            "agents": [a.to_dict() for a in agents],
+            "total": len(agents),
+            "stats": app.state.acp_registry.get_stats(),
+        }
+
+    @app.post("/acp/{agent_id}/heartbeat", tags=["acp"])
+    async def acp_heartbeat(agent_id: str, request: Request):
+        """Keep-alive ping. Optionally report task progress."""
+        body = await request.json()
+        progress_pct = body.get("progress_pct")
+        message = body.get("message", "")
+        found = app.state.acp_registry.heartbeat(agent_id, progress_pct, message)
+        if not found:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return {"agent_id": agent_id, "ok": True}
+
+    @app.get("/acp/{agent_id}/tasks", tags=["acp"])
+    async def acp_list_tasks(agent_id: str, status: Optional[str] = None):
+        """List tasks assigned to an agent."""
+        agent = app.state.acp_registry.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        task_status = ACPTaskStatus(status) if status else None
+        tasks = app.state.acp_registry.get_tasks_for_agent(agent_id, task_status)
+        return {"tasks": [t.to_dict() for t in tasks], "total": len(tasks)}
+
+    @app.post("/acp/{agent_id}/tasks/{task_id}/claim", tags=["acp"])
+    async def acp_claim_task(agent_id: str, task_id: str):
+        """Agent claims a pending task."""
+        task = app.state.acp_registry.claim_task(agent_id, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found or not pending")
+        return {"task": task.to_dict()}
+
+    @app.post("/acp/{agent_id}/tasks/{task_id}/complete", tags=["acp"])
+    async def acp_complete_task(agent_id: str, task_id: str, request: Request):
+        """Agent reports task completion with result."""
+        body = await request.json()
+        result = body.get("result", {})
+        task = app.state.acp_registry.complete_task(agent_id, task_id, result)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        # Emit to coordinator event bus so UI/channels can react
+        _emit_coordinator_event(app, "acp_task_completed", {
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "result": result,
+        })
+        return {"task": task.to_dict()}
+
+    @app.get("/acp/{agent_id}/stream", tags=["acp"])
+    async def acp_stream(agent_id: str):
+        """SSE stream for real-time task assignments and aborts."""
+        agent = app.state.acp_registry.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        queue = await app.state.acp_registry.get_event_queue(agent_id)
+
+        async def event_generator():
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=60.0)
+                    if event is None:
+                        break
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f": keepalive {int(datetime.now().timestamp())}\n\n"
+
+        return sse_starlette.EventSourceResponse(event_generator())
 
     # ── Static UI ────────────────────────────────────────────────────────────
 
