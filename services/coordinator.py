@@ -15,11 +15,12 @@ Key Design Patterns (from Claude Code):
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Callable, Type
+from typing import Any, Dict, List, Optional, Callable, Type, Set
 from enum import Enum
 from datetime import datetime
 import uuid
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,10 @@ class Coordinator:
     4. Message passing
     5. Result aggregation
     
+    Supports both synchronous and asynchronous execution:
+    - run_workflow(): Sync wrapper for backward compatibility
+    - run_workflow_async(): Native async, event-driven (preferred)
+    
     Usage:
         coordinator = Coordinator()
         
@@ -356,8 +361,8 @@ class Coordinator:
             dependencies=["task_env"],
         ), stage="execute")
         
-        # Execute
-        result = coordinator.run_workflow(workflow)
+        # Execute (async preferred)
+        result = await coordinator.run_workflow_async(workflow)
     """
     
     def __init__(self):
@@ -371,6 +376,17 @@ class Coordinator:
         # Callbacks
         self._on_task_complete: Optional[Callable[[Task], None]] = None
         self._on_workflow_complete: Optional[Callable[[Workflow], None]] = None
+        
+        # Async coordination (lazily created to avoid Python 3.7 event-loop issues)
+        self._condition: Optional[asyncio.Condition] = None
+        self._running_async: Set[str] = set()  # task_ids currently executing in async mode
+    
+    @property
+    def condition(self) -> asyncio.Condition:
+        """Lazily create asyncio.Condition in the current event loop."""
+        if self._condition is None:
+            self._condition = asyncio.Condition()
+        return self._condition
     
     @property
     def agents(self) -> AgentRegistry:
@@ -465,13 +481,31 @@ class Coordinator:
         return True
     
     def _execute_task(self, task: Task) -> Dict[str, Any]:
-        """Execute a task using registered handler"""
+        """Execute a task using registered handler (synchronous)"""
         handler = self._handlers.get(task.type)
         
         if not handler:
             raise ValueError(f"No handler registered for task type: {task.type}")
         
         return handler(task)
+    
+    async def _execute_task_async(self, task: Task) -> Dict[str, Any]:
+        """Execute a task using registered handler (async-aware)
+        
+        If the handler is a coroutine function, await it directly.
+        If it's a regular function, run it in the default executor to avoid
+        blocking the event loop.
+        """
+        handler = self._handlers.get(task.type)
+        
+        if not handler:
+            raise ValueError(f"No handler registered for task type: {task.type}")
+        
+        if asyncio.iscoroutinefunction(handler):
+            return await handler(task)
+        else:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, handler, task)
     
     def complete_task(self, task_id: str, result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> None:
         """Mark a task as completed"""
@@ -518,30 +552,59 @@ class Coordinator:
                 workflow.completed_at = datetime.now()
                 if self._on_workflow_complete:
                     self._on_workflow_complete(workflow)
+        
+        # Notify any async waiters
+        self._notify_condition()
     
-    def run_workflow(self, workflow: Workflow, timeout: float = 3600.0) -> Dict[str, Any]:
-        """
-        Execute a workflow to completion (synchronous).
+    def _notify_condition(self):
+        """Notify all coroutines waiting on the asyncio.Condition.
         
-        Tasks are executed in dependency order. This is a blocking call.
+        Safe to call from both sync and async contexts.
+        If no event loop is running, this is a no-op.
         """
-        workflow.started_at = datetime.now()
+        async def _do_notify():
+            async with self.condition:
+                self.condition.notify_all()
         
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_do_notify())
+        except RuntimeError:
+            # No running event loop — nothing to notify
+            pass
+    
+    async def run_workflow_async(self, workflow: Workflow, timeout: float = 3600.0) -> Dict[str, Any]:
+        """
+        Execute a workflow to completion (asynchronous, event-driven).
+        
+        Tasks are executed in dependency order. Uses asyncio.Condition
+        instead of time.sleep polling — waits efficiently for task completion.
+        
+        Args:
+            workflow: The workflow to execute
+            timeout: Maximum execution time in seconds
+        
+        Returns:
+            Aggregated results dict
+        """
         import time
+        workflow.started_at = datetime.now()
         start = time.time()
         completed = set()
         
-        # Keep processing until all tasks are done or timeout
-        while len(completed) < len(workflow.tasks):
-            if time.time() - start > timeout:
+        while True:
+            # --- Check termination ---
+            if len(completed) >= len(workflow.tasks):
+                break
+            
+            remaining_timeout = timeout - (time.time() - start)
+            if remaining_timeout <= 0:
                 logger.warning(f"Workflow {workflow.id} timed out after {timeout}s")
                 break
             
-            # Find tasks that are PENDING and ready (deps satisfied)
+            # --- Find ready tasks ---
             ready_pending = workflow.get_ready_tasks(completed)
             
-            # Also find tasks that are RUNNING but not yet executed
-            # (assigned by complete_task's internal _try_assign_task call)
             running_unexecuted = [
                 t for t in workflow.tasks.values()
                 if t.status == TaskStatus.RUNNING and t.id not in completed
@@ -552,13 +615,26 @@ class Coordinator:
             ]
             
             if not tasks_to_execute:
-                # Check for deadlock
+                # Check for deadlock (all remaining tasks are blocked)
                 remaining = [t for t in workflow.tasks.values() if t.id not in completed]
                 if not remaining:
                     break
-                time.sleep(0.01)
+                
+                # Wait for a task to complete instead of polling
+                try:
+                    async with self.condition:
+                        await asyncio.wait_for(
+                            self.condition.wait(),
+                            timeout=min(remaining_timeout, 1.0),
+                        )
+                except asyncio.TimeoutError:
+                    # No notification received within the wait window;
+                    # loop back to re-check ready tasks and timeout.
+                    pass
                 continue
             
+            # --- Execute ready tasks (potentially in parallel) ---
+            coros = []
             for task in tasks_to_execute:
                 # Assign if still PENDING
                 if task.status == TaskStatus.PENDING:
@@ -566,21 +642,51 @@ class Coordinator:
                     if not assigned:
                         continue
                 
-                # Execute (task is now RUNNING)
                 if task.status == TaskStatus.RUNNING:
-                    try:
-                        result = self._execute_task(task)
-                        self.complete_task(task.id, result=result)
-                    except Exception as e:
-                        self.complete_task(task.id, error=str(e))
-                    
-                    if task.status == TaskStatus.COMPLETED:
-                        completed.add(task.id)
+                    coros.append(self._run_task_async(task))
+            
+            if coros:
+                # Run tasks concurrently
+                await asyncio.gather(*coros)
+                
+                # Update completed set
+                for t in workflow.tasks.values():
+                    if t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) and t.id not in completed:
+                        completed.add(t.id)
         
         return self._aggregate_results(workflow)
+    
+    async def _run_task_async(self, task: Task) -> None:
+        """Execute a single task asynchronously and mark it complete."""
+        try:
+            result = await self._execute_task_async(task)
+            self.complete_task(task.id, result=result)
+        except Exception as e:
+            self.complete_task(task.id, error=str(e))
+    
+    def run_workflow(self, workflow: Workflow, timeout: float = 3600.0) -> Dict[str, Any]:
+        """
+        Execute a workflow to completion (synchronous wrapper).
         
-        # Aggregate results
-        return self._aggregate_results(workflow)
+        Delegates to run_workflow_async(). If an event loop is already
+        running, runs in a separate thread; otherwise uses asyncio.run().
+        
+        Tasks are executed in dependency order. This is a blocking call.
+        """
+        try:
+            asyncio.get_running_loop()
+            # Already in an async context — run in a separate thread
+            # to avoid blocking the existing loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    self.run_workflow_async(workflow, timeout),
+                )
+                return future.result(timeout=timeout + 10)
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run()
+            return asyncio.run(self.run_workflow_async(workflow, timeout))
     
     def _aggregate_results(self, workflow: Workflow) -> Dict[str, Any]:
         """Aggregate results from all tasks in a workflow"""
