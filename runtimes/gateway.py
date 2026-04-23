@@ -54,6 +54,10 @@ def _get_adaptive_runtime():
     from runtimes.adaptive_runtime import AdaptiveRuntime, PipelineConfig
     return AdaptiveRuntime, PipelineConfig
 
+def _get_feishu_adapter():
+    from channels import FeishuAdapter, FeishuConfig, register_feishu_webhook
+    return FeishuAdapter, FeishuConfig, register_feishu_webhook
+
 # ── SSE Event Queues ───────────────────────────────────────────────────────────
 
 # job_id → asyncio.Queue for SSE subscribers
@@ -446,3 +450,50 @@ if __name__ == "__main__":
 
     app = create_app()
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
+
+
+# ── Feishu Webhook Integration ────────────────────────────────────────────────
+
+def setup_feishu_webhook(
+    app: FastAPI,
+    app_id: str,
+    app_secret: str,
+    encrypt_key: str = "",
+    verification_token: str = "",
+    webhook_path: str = "/webhooks/feishu",
+    on_message: Optional[callable] = None,
+) -> "FeishuAdapter":
+    """
+    在 FastAPI 应用中注册飞书 Webhook
+    
+    Args:
+        app: FastAPI 应用实例
+        app_id: 飞书应用 ID
+        app_secret: 飞书应用密钥
+        encrypt_key: 事件加密密钥（可选）
+        verification_token: 事件验证 token（可选）
+        webhook_path: Webhook 路径
+        on_message: 消息回调函数
+    
+    Returns:
+        FeishuAdapter 实例
+    """
+    FeishuAdapter, FeishuConfig, register_feishu_webhook = _get_feishu_adapter()
+    
+    config = FeishuConfig(
+        app_id=app_id,
+        app_secret=app_secret,
+        encrypt_key=encrypt_key,
+        verification_token=verification_token,
+    )
+    
+    adapter = FeishuAdapter(config=config, on_message=on_message)
+    
+    # 注册 webhook 路由
+    register_feishu_webhook(app, adapter, path=webhook_path)
+    
+    # 存储到 app.state
+    app.state.feishu_adapter = adapter
+    
+    logger.info(f"飞书 Webhook 已注册: {webhook_path}")
+    return adapter
