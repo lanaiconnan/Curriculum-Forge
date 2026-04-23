@@ -58,6 +58,14 @@ def _get_feishu_adapter():
     from channels import FeishuAdapter, FeishuConfig, register_feishu_webhook
     return FeishuAdapter, FeishuConfig, register_feishu_webhook
 
+def _get_weixin_adapter():
+    from channels import WeixinAdapter, WeixinConfig, register_weixin_webhook
+    return WeixinAdapter, WeixinConfig, register_weixin_webhook
+
+def _get_bridge():
+    from channels.bridge import ChannelJobBridge, BridgeConfig, create_bridge
+    return ChannelJobBridge, BridgeConfig, create_bridge
+
 # ── SSE Event Queues ───────────────────────────────────────────────────────────
 
 # job_id → asyncio.Queue for SSE subscribers
@@ -92,6 +100,10 @@ def create_app(
     app.state.store = checkpoint_store or CheckpointStore()
     app.state.ui_dir = ui_dir or (PROJECT_ROOT / "ui" / "operator-ui" / "dist")
     app.state._running_jobs: Dict[str, asyncio.Task] = {}
+
+    # ── Bridge（Channel → Job）──────────────────────────────────────────
+    _, _, create_bridge = _get_bridge()
+    app.state.bridge = create_bridge(gateway_url="http://localhost:8765")
 
     # ── CORS ────────────────────────────────────────────────────────────────
 
@@ -354,15 +366,16 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
         return
 
     try:
-        AdaptiveRuntime, PipelineConfig = _get_adaptive_runtime()
+        # Use pipeline_factory to create fully-wired runtime
+        from runtimes.pipeline_factory import create_runtime_from_profile
 
-        # Build config from stored profile
-        config = PipelineConfig(
+        runtime = create_runtime_from_profile(
             profile_name=record.profile,
-            max_iterations=record.config.get("max_iterations", 10),
+            checkpoint_store=store,
         )
 
-        runtime = AdaptiveRuntime(config=config, checkpoint_store=store)
+        # Merge extra config from the job record
+        job_config = dict(record.config)
 
         async for event in runtime.run_stream(record.id):
             # Persist updated record
@@ -487,6 +500,10 @@ def setup_feishu_webhook(
         verification_token=verification_token,
     )
     
+    # 如果未提供 on_message，使用 bridge 的默认处理器
+    if on_message is None and hasattr(app.state, "bridge"):
+        on_message = app.state.bridge.on_message
+    
     adapter = FeishuAdapter(config=config, on_message=on_message)
     
     # 注册 webhook 路由
@@ -496,4 +513,55 @@ def setup_feishu_webhook(
     app.state.feishu_adapter = adapter
     
     logger.info(f"飞书 Webhook 已注册: {webhook_path}")
+    return adapter
+
+
+# ── WeChat Webhook Integration ─────────────────────────────────────────────────
+
+def setup_weixin_webhook(
+    app: FastAPI,
+    app_id: str,
+    app_secret: str,
+    token: str,
+    encoding_aes_key: str = "",
+    webhook_path: str = "/webhooks/weixin",
+    on_message: Optional[callable] = None,
+) -> "WeixinAdapter":
+    """
+    在 FastAPI 应用中注册微信 Webhook
+    
+    Args:
+        app: FastAPI 应用实例
+        app_id: 微信公众号 AppID
+        app_secret: 微信公众号 AppSecret
+        token: 微信公众平台配置的 Token
+        encoding_aes_key: 消息加解密密钥（可选）
+        webhook_path: Webhook 路径
+        on_message: 消息回调函数
+    
+    Returns:
+        WeixinAdapter 实例
+    """
+    WeixinAdapter, WeixinConfig, register_weixin_webhook = _get_weixin_adapter()
+    
+    config = WeixinConfig(
+        app_id=app_id,
+        app_secret=app_secret,
+        token=token,
+        encoding_aes_key=encoding_aes_key,
+    )
+    
+    # 如果未提供 on_message，使用 bridge 的默认处理器
+    if on_message is None and hasattr(app.state, "bridge"):
+        on_message = app.state.bridge.on_message
+    
+    adapter = WeixinAdapter(config=config, on_message=on_message)
+    
+    # 注册 webhook 路由
+    register_weixin_webhook(app, adapter, path=webhook_path)
+    
+    # 存储到 app.state
+    app.state.weixin_adapter = adapter
+    
+    logger.info(f"微信 Webhook 已注册: {webhook_path}")
     return adapter

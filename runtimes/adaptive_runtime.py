@@ -13,7 +13,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from providers.base import (
     RunState,
@@ -54,12 +54,88 @@ class AdaptiveRuntime:
         self,
         config: PipelineConfig,
         checkpoint_store: CheckpointStore,
+        service_container: Any = None,
     ):
         self.config = config
         self.checkpoint_store = checkpoint_store
+        self.service_container = service_container  # May be None (standalone mode)
         self._record: Optional[CheckpointRecord] = None
         self._interactive_queue = asyncio.Queue()
         self._provider_index: int = 0
+
+    async def run_stream(self, run_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Execute pipeline and yield events for SSE streaming.
+
+        Yields event dicts:
+            {"event": "phase_start", "phase": "curriculum", "index": 0}
+            {"event": "phase_done",  "phase": "curriculum", "output": {...}}
+            {"event": "error",      "error": "..."}
+        """
+        from typing import AsyncGenerator
+
+        run_config = {}
+        rid = run_id or self.checkpoint_store.new_id()
+
+        self._record = CheckpointRecord(
+            id=rid,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            profile=self.config.profile,
+            phase=TaskPhase.CURRICULUM.value,
+            state=RunState.RUNNING,
+            config=run_config,
+            state_data={},
+            metrics={"providers_run": 0, "providers_succeeded": 0},
+        )
+        self._save()
+
+        yield {"event": "start", "run_id": rid, "profile": self.config.profile}
+
+        providers_to_run = self.config.providers
+        self._provider_index = 0
+
+        try:
+            for idx, provider in enumerate(providers_to_run):
+                self._provider_index = idx
+                phase_name = provider.phase.value
+
+                yield {"event": "phase_start", "phase": phase_name, "index": idx}
+
+                output = await self._execute_provider(provider, run_config)
+
+                self._record.state_data[phase_name] = output.to_dict()
+                self._record.metrics["providers_run"] += 1
+                if output.ok:
+                    self._record.metrics["providers_succeeded"] += 1
+                self._record.phase = phase_name
+                self._save()
+
+                yield {
+                    "event": "phase_done",
+                    "phase": phase_name,
+                    "ok": output.ok,
+                    "output": output.to_dict(),
+                }
+
+                if output.metadata.get("waiting"):
+                    self._record.state = RunState.WAITING
+                    self._save()
+                    yield {"event": "waiting", "phase": phase_name}
+                    if self.config.interactive:
+                        user_input = await self._interactive_queue.get()
+                        run_config.update(user_input)
+
+            self._record.state = RunState.COMPLETED
+            self._record.finished_at = datetime.now(timezone.utc).isoformat()
+            self._save()
+            yield {"event": "done", "state": "completed", "run_id": rid}
+
+        except Exception as e:
+            self._record.state = RunState.FAILED
+            self._record.metrics["error"] = str(e)
+            self._record.finished_at = datetime.now(timezone.utc).isoformat()
+            self._save()
+            yield {"event": "error", "error": str(e), "phase": self._record.phase}
 
     @property
     def record(self) -> Optional[CheckpointRecord]:
@@ -214,7 +290,10 @@ class AdaptiveRuntime:
         provider: TaskProvider,
         config: Dict[str, Any],
     ) -> TaskOutput:
-        """执行单个 Provider（含 before/after hook）"""
+        """执行单个 Provider（含 before/after hook）。
+
+        Provider 通过 runtime.service_container 访问 services/ 层。
+        """
         await provider.before_execute(config, self)
         output = await provider.execute(config, self)
         await provider.after_execute(output, self)

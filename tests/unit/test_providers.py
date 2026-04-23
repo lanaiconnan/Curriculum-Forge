@@ -1,7 +1,7 @@
 """
 Unit Tests for Provider Layer
 
-测试 providers/ 下的所有模块：
+测试 providers/ 下的所有模块:
 - TaskPhase / RunState 枚举
 - TaskProvider 基类
 - CurriculumProvider
@@ -44,7 +44,7 @@ def mock_runtime():
     """Mock AdaptiveRuntime for Provider tests"""
     import tempfile
     from pathlib import Path
-    
+
     cp = CurriculumProvider()
     store = CheckpointStore(Path(tempfile.mkdtemp()))
     cfg = PipelineConfig(
@@ -74,7 +74,7 @@ class TestTaskPhase:
         assert TaskPhase.HARNESS.value    == "harness"
         assert TaskPhase.MEMORY.value     == "memory"
         assert TaskPhase.REVIEW.value     == "review"
-    
+
     def test_phase_order(self):
         """字母序 = 执行顺序 curriculum < harness < memory < review"""
         phases = sorted([TaskPhase.CURRICULUM, TaskPhase.HARNESS,
@@ -98,15 +98,15 @@ class TestTaskOutput:
     def test_ok_true(self):
         out = TaskOutput(phase=TaskPhase.CURRICULUM, data={"status": "ok"})
         assert out.ok is True
-    
+
     def test_ok_false(self):
         out = TaskOutput(phase=TaskPhase.HARNESS, data={"status": "error"})
         assert out.ok is False
-    
+
     def test_ok_missing_status(self):
         out = TaskOutput(phase=TaskPhase.MEMORY, data={})
         assert out.ok is True  # 默认 ok
-    
+
     def test_to_dict(self):
         out = TaskOutput(
             phase=TaskPhase.CURRICULUM,
@@ -125,26 +125,26 @@ class TestCurriculumProvider:
     def test_phase(self):
         p = CurriculumProvider()
         assert p.phase == TaskPhase.CURRICULUM
-    
+
     def test_can_handle_with_topic(self):
         p = CurriculumProvider()
         assert p.can_handle({"topic": "Python"}) is True
-    
+
     def test_can_handle_without_topic(self):
         p = CurriculumProvider()
         assert p.can_handle({}) is False
-    
+
     @pytest.mark.asyncio
     async def test_execute_basic(self, mock_runtime):
         p = CurriculumProvider()
         config = {"topic": "Python", "difficulty": "beginner"}
         out = await p.execute(config, mock_runtime)
-        
+
         assert out.ok is True
         assert out.phase == TaskPhase.CURRICULUM
         modules = out.data["curriculum"]["modules"]
         assert len(modules) == 3  # beginner → 3 modules
-    
+
     @pytest.mark.asyncio
     async def test_execute_all_difficulties(self, mock_runtime):
         for diff in ["beginner", "intermediate", "advanced", "expert"]:
@@ -152,7 +152,7 @@ class TestCurriculumProvider:
             out = await p.execute({"topic": "Test", "difficulty": diff}, mock_runtime)
             assert out.ok is True, f"Failed on {diff}"
             assert len(out.data["curriculum"]["modules"]) >= 3
-    
+
     def test_validate_config_missing_topic(self):
         p = CurriculumProvider()
         with pytest.raises(ValueError, match="topic is required"):
@@ -165,11 +165,11 @@ class TestHarnessProvider:
     def test_phase(self):
         p = HarnessProvider()
         assert p.phase == TaskPhase.HARNESS
-    
+
     def test_can_handle_with_modules(self):
         p = HarnessProvider()
         assert p.can_handle({"modules": []}) is True
-    
+
     def test_generate_from_modules(self):
         p = HarnessProvider()
         modules = [
@@ -185,7 +185,7 @@ class TestHarnessProvider:
         cases = p._generate_from_modules(modules)
         assert len(cases) == 2  # 2 lessons from 1 module
         assert all(isinstance(c, HarnessCase) for c in cases)
-    
+
     @pytest.mark.asyncio
     async def test_execute_with_cases(self, mock_runtime):
         p = HarnessProvider()
@@ -209,8 +209,8 @@ class TestMemoryProvider:
     def test_phase(self):
         p = MemoryProvider()
         assert p.phase == TaskPhase.MEMORY
-    
-    def test_extract_from_harness(self):
+
+    def test_extract_experiences(self):
         p = MemoryProvider()
         harness_data = {
             "data": {
@@ -222,15 +222,24 @@ class TestMemoryProvider:
                 }
             }
         }
-        exps = p._extract_from_harness(harness_data)
+        # Test via _extract_experiences (from state_data dict)
+        class FakeRecord:
+            state_data = {"harness": harness_data, "review": {}}
+        class FakeRuntime:
+            _record = FakeRecord()
+        exps = p._extract_experiences(FakeRuntime())
         assert len(exps) == 2
         assert exps[0]["type"] == "harness_pass"
         assert exps[1]["type"] == "harness_fail"
-    
-    def test_extract_from_harness_empty(self):
+
+    def test_extract_experiences_empty(self):
         p = MemoryProvider()
-        assert p._extract_from_harness({}) == []
-    
+        class FakeRecord:
+            state_data = {}
+        class FakeRuntime:
+            _record = FakeRecord()
+        assert p._extract_experiences(FakeRuntime()) == []
+
     @pytest.mark.asyncio
     async def test_execute_empty(self, mock_runtime):
         p = MemoryProvider()
@@ -245,12 +254,15 @@ class TestReviewProvider:
     def test_phase(self):
         p = ReviewProvider()
         assert p.phase == TaskPhase.REVIEW
-    
+
     def test_judge_pass(self):
         p = ReviewProvider()
         verdict, feedback = p._judge(
+            keep_rate=0.8,
+            harness_pass_rate=0.8,
+            memory_hit_rate=0.6,
             harness_data={
-                "data": {"test_report": {"pass_rate": 0.8}}
+                "data": {"test_report": {"pass_rate": 0.8, "total": 10, "passed": 8}}
             },
             memory_data={
                 "data": {"memory": {"hit_rate": 0.6}}
@@ -259,18 +271,21 @@ class TestReviewProvider:
         )
         assert verdict == "pass"
         assert any("✅" in f for f in feedback)
-    
+
     def test_judge_fail(self):
         p = ReviewProvider()
         verdict, feedback = p._judge(
+            keep_rate=0.1,
+            harness_pass_rate=0.2,
+            memory_hit_rate=0.0,
             harness_data={
-                "data": {"test_report": {"pass_rate": 0.2}}
+                "data": {"test_report": {"pass_rate": 0.2, "total": 10, "passed": 2}}
             },
             memory_data={},
             curriculum_data={},
         )
         assert verdict == "fail"
-    
+
     @pytest.mark.asyncio
     async def test_execute_with_data(self, mock_runtime):
         p = ReviewProvider()
@@ -294,7 +309,7 @@ class TestProviderRegistry:
         reg.register(cp)
         assert reg.get(TaskPhase.CURRICULUM) is cp
         assert reg.get(TaskPhase.HARNESS) is None
-    
+
     def test_list(self):
         reg = ProviderRegistry()
         reg.register(CurriculumProvider())
@@ -305,7 +320,7 @@ class TestProviderRegistry:
         # 按字母序 curriculum < harness < memory < review
         assert [p.phase.value for p in providers] == \
             ["curriculum", "harness", "memory", "review"]
-    
+
     def test_list_by_phase(self):
         reg = ProviderRegistry()
         reg.register(CurriculumProvider())
@@ -325,7 +340,7 @@ class TestCheckpointStore:
             run_id = store.new_id()
             assert run_id.startswith("run_")
             assert "_" in run_id
-    
+
     def test_save_and_load(self):
         from pathlib import Path
         import tempfile
@@ -342,20 +357,20 @@ class TestCheckpointStore:
                 metrics={},
             )
             store.save(record)
-            
+
             loaded = store.load("test_run_001")
             assert loaded is not None
             assert loaded.id == "test_run_001"
             assert loaded.profile == "test"
             assert loaded.state == RunState.RUNNING
-    
+
     def test_load_nonexistent(self):
         from pathlib import Path
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             store = CheckpointStore(Path(tmpdir))
             assert store.load("nonexistent") is None
-    
+
     def test_delete(self):
         from pathlib import Path
         import tempfile
@@ -374,7 +389,7 @@ class TestCheckpointStore:
             store.save(record)
             assert store.delete("test_del_001") is True
             assert store.load("test_del_001") is None
-    
+
     def test_summary(self):
         from pathlib import Path
         import tempfile
@@ -406,7 +421,7 @@ class TestAdaptiveRuntime:
         with tempfile.TemporaryDirectory() as tmpdir:
             rt = AdaptiveRuntime(cfg, checkpoint_store=CheckpointStore(Path(tmpdir)))
             record = await rt.run({"topic": "Python", "difficulty": "beginner"})
-            
+
             assert record.state == RunState.COMPLETED
             assert record.profile == "test"
             assert record.metrics["providers_run"] == 4
@@ -415,7 +430,7 @@ class TestAdaptiveRuntime:
             assert "harness" in record.state_data
             assert "memory" in record.state_data
             assert "review" in record.state_data
-    
+
     @pytest.mark.asyncio
     async def test_status(self):
         import tempfile
@@ -425,7 +440,7 @@ class TestAdaptiveRuntime:
         rt = AdaptiveRuntime(cfg, checkpoint_store=store)
         # 运行前
         assert rt.status["state"] == "not_started"
-    
+
     @pytest.mark.asyncio
     async def test_run_single_provider(self):
         cfg = PipelineConfig(profile="single", providers=[CurriculumProvider()], auto_save=False)
@@ -451,7 +466,7 @@ class TestHarnessTypes:
         )
         assert case.id == "test_case"
         assert case.expected_tool == "read_file"
-    
+
     def test_harness_report(self):
         results = [
             HarnessResult("c1", VERDICT_PASS, "read_file", {}),
