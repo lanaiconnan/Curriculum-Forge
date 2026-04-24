@@ -549,17 +549,6 @@ def create_app(
         is_valid, errors = validate_profile_file(profile_path)
         return {"name": name, "valid": is_valid, "errors": errors}
 
-    @app.get("/profiles/schema", tags=["profiles"])
-    async def profile_schema():
-        """Return the profile JSON schema documentation."""
-        return {
-            "required": ["name", "version"],
-            "optional": {"description": "string", "providers": "list", "defaults": "dict", "runtime": "dict", "metadata": "dict"},
-            "known_defaults": {k: t.__name__ if not isinstance(t, tuple) else "union" for k, t in DEFAULT_KEYS.items()},
-            "service_defaults": SERVICE_DEFAULTS,
-        }
-
-    # ── Store Summary ────────────────────────────────────────────────────────
 
     @app.get("/stats", tags=["system"])
     async def stats():
