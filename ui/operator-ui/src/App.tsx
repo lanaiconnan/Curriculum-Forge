@@ -3,8 +3,8 @@ import {
   listJobs, getJob, getJobMetrics, createJob, resumeJob, abortJob,
   listProfiles, healthCheck, subscribeJob, subscribeCoordinatorEvents,
   listPlugins, enablePlugin, disablePlugin, updatePluginConfig,
-  getAuditLogs, getAuditStats, getStats,
-  type Job, type Profile,
+  getAuditLogs, getAuditStats, getStats, getStatsTimeseries,
+  type Job, type Profile, type StatsBucket,
 } from './api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -446,29 +446,55 @@ function JobDetail({
 // ── Jobs List ─────────────────────────────────────────────────────────────────
 
 
-function StatsCard({ stats, loading }: { stats: Record<string, unknown> | null; loading: boolean }) {
+function Sparkline({ data, color = '#60a5fa', height = 24 }: { data: number[]; color?: string; height?: number }) {
+  if (!data.length) return null;
+  const max = Math.max(...data, 1);
+  const width = data.length * 4; // 4px per point
+  const points = data.map((v, i) => {
+    const x = i * 4 + 2;
+    const y = height - (v / max) * (height - 2);
+    return `${x},${y}`;
+  }).join(' ');
+  return (
+    <svg width={width} height={height} className="opacity-60">
+      <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} />
+    </svg>
+  );
+}
+
+function StatsCard({ stats, timeseries, loading }: { stats: Record<string, unknown> | null; timeseries: StatsBucket[]; loading: boolean }) {
   if (loading) return <div className="text-gray-500 text-sm py-4">Loading stats…</div>;
   if (!stats) return null;
   
   const fmt = (v: number | undefined) => v?.toLocaleString?.() ?? '-';
   
+  // Extract sparkline data from timeseries
+  const totalData = timeseries.map(b => b.total).reverse();
+  const successData = timeseries.map(b => b.total > 0 ? Math.round((b.completed / b.total) * 100) : 0).reverse();
+  const durationData = timeseries.map(b => b.avg_duration_ms || 0).reverse();
+  const throughputData = timeseries.map(b => b.total).reverse();
+  
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
       <div className="bg-gray-900 rounded p-3 border border-gray-800">
         <div className="text-2xl font-bold text-white">{fmt(stats.total as number)}</div>
-        <div className="text-xs text-gray-500">Total Jobs</div>
+        <div className="text-xs text-gray-500 mb-1">Total Jobs</div>
+        <Sparkline data={totalData} color="#ffffff" />
       </div>
       <div className="bg-gray-900 rounded p-3 border border-gray-800">
         <div className="text-2xl font-bold text-green-400">{fmt(stats.success_rate as number)}%</div>
-        <div className="text-xs text-gray-500">Success Rate</div>
+        <div className="text-xs text-gray-500 mb-1">Success Rate</div>
+        <Sparkline data={successData} color="#4ade80" />
       </div>
       <div className="bg-gray-900 rounded p-3 border border-gray-800">
         <div className="text-2xl font-bold text-blue-400">{fmt(stats.avg_duration_ms as number)}ms</div>
-        <div className="text-xs text-gray-500">Avg Duration</div>
+        <div className="text-xs text-gray-500 mb-1">Avg Duration</div>
+        <Sparkline data={durationData} color="#60a5fa" />
       </div>
       <div className="bg-gray-900 rounded p-3 border border-gray-800">
         <div className="text-2xl font-bold text-yellow-400">{fmt(stats.throughput_last_hour as number)}</div>
-        <div className="text-xs text-gray-500">Jobs/Hour</div>
+        <div className="text-xs text-gray-500 mb-1">Jobs/Hour</div>
+        <Sparkline data={throughputData} color="#facc15" />
       </div>
     </div>
   );
@@ -861,6 +887,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [gatewayHealth, setGatewayHealth] = useState<{ status: string; version: string } | null>(null);
   const [gatewayStats, setGatewayStats] = useState<Record<string, unknown> | null>(null);
+  const [timeseries, setTimeseries] = useState<StatsBucket[]>([]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -871,6 +898,7 @@ export default function App() {
 
   const loadStats = useCallback(async () => {
     try { setGatewayStats(await getStats()); } catch { /* optional */ }
+    try { setTimeseries(await getStatsTimeseries(24)); } catch { /* optional */ }
   }, []);
 
   const loadProfiles = useCallback(async () => {
@@ -983,7 +1011,7 @@ export default function App() {
             <JobDetail job={selectedJob} onBack={() => setSelectedJob(null)} onRefresh={handleJobRefresh} />
           ) : (
             <>
-              <StatsCard stats={gatewayStats} loading={loading} />
+              <StatsCard stats={gatewayStats} timeseries={timeseries} loading={loading} />
               <JobsList
                 jobs={jobs}
                 onSelect={setSelectedJob}
