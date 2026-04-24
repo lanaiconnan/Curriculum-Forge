@@ -50,6 +50,10 @@ from providers.base import RunState, TaskPhase, TaskOutput
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
 from runtimes.workspace import RunWorkspace
 
+# ── Audit Logger ───────────────────────────────────────────────────────────────
+
+from audit import AuditLogger
+
 # ── ACP ───────────────────────────────────────────────────────────────────────
 
 def _get_acp_registry():
@@ -119,6 +123,9 @@ def create_app(
     # ── ACP Registry ─────────────────────────────────────────────────────
     ACPRegistry = _get_acp_registry()
     app.state.acp_registry = ACPRegistry()
+
+    # ── Audit Logger ───────────────────────────────────────────────────────
+    app.state.audit = AuditLogger(source="gateway")
 
     # ── Bridge（Channel → Job）──────────────────────────────────────────
     _, _, create_bridge = _get_bridge()
@@ -240,6 +247,10 @@ def create_app(
                 app, "job_created",
                 {"job_id": run_id, "profile": record.profile, "status": record.state.value}
             )
+            app.state.audit.log(
+                category="job", event="job_created", actor="user",
+                target=run_id, metadata={"profile": record.profile}
+            )
             return {"job": _record_to_api(record), "created": True}
 
         # ── Path 2: Profile name ────────────────────────────────────────────
@@ -275,6 +286,10 @@ def create_app(
         _emit_coordinator_event(
             app, "job_created",
             {"job_id": run_id, "profile": profile_name, "status": "pending"}
+        )
+        app.state.audit.log(
+            category="job", event="job_created", actor="user",
+            target=run_id, metadata={"profile": profile_name}
         )
         return {"job": _record_to_api(record), "created": True}
 
@@ -312,6 +327,10 @@ def create_app(
             app, "job_status_changed",
             {"job_id": job_id, "status": "running"}
         )
+        app.state.audit.log(
+            category="job", event="job_resumed", actor="user",
+            target=job_id, metadata={"profile": record.profile}
+        )
         return {"job": _record_to_api(record), "resumed": True}
 
     @app.post("/jobs/{job_id}/abort", tags=["jobs"])
@@ -336,6 +355,10 @@ def create_app(
         _emit_coordinator_event(
             app, "job_status_changed",
             {"job_id": job_id, "status": "cancelled"}
+        )
+        app.state.audit.log(
+            category="job", event="job_aborted", actor="user",
+            target=job_id, metadata={"reason": "user_abort"}
         )
         return {"job": _record_to_api(record), "aborted": True}
 
@@ -398,6 +421,37 @@ def create_app(
         """Gateway statistics."""
         store = app.state.store
         return store.summary()
+
+    # ── Audit API ──────────────────────────────────────────────────────────────
+
+    @app.get("/audit", tags=["audit"])
+    async def query_audit(
+        category: Optional[str] = None,
+        event: Optional[str] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        date: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ):
+        """Query audit logs with optional filters."""
+        audit = app.state.audit
+        records = audit.query(
+            category=category,
+            event=event,
+            actor=actor,
+            target=target,
+            date=date,
+            limit=limit,
+            offset=offset,
+        )
+        return {"records": records, "count": len(records)}
+
+    @app.get("/audit/stats", tags=["audit"])
+    async def audit_stats(date: Optional[str] = None):
+        """Audit log statistics for a given date."""
+        audit = app.state.audit
+        return audit.stats(date=date)
 
     # ── Coordinator API (Multi-Agent) ─────────────────────────────────────────
 
@@ -598,6 +652,10 @@ def create_app(
         )
         session_id = app.state.acp_registry.register(agent)
         logger.info(f"ACP registered: {agent_id}")
+        app.state.audit.log(
+            category="acp", event="agent_registered", actor=agent_id,
+            target=agent_id, metadata={"name": agent.name, "role": agent.role}
+        )
         return {
             "session_id": session_id,
             "agent_id": agent_id,
@@ -610,6 +668,10 @@ def create_app(
         found = app.state.acp_registry.unregister(agent_id)
         if not found:
             raise HTTPException(status_code=404, detail="Agent not found")
+        app.state.audit.log(
+            category="acp", event="agent_unregistered", actor=agent_id,
+            target=agent_id
+        )
         return {"agent_id": agent_id, "unregistered": True}
 
     @app.get("/acp/{agent_id}", tags=["acp"])
@@ -657,6 +719,10 @@ def create_app(
         task = app.state.acp_registry.claim_task(agent_id, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found or not pending")
+        app.state.audit.log(
+            category="acp", event="task_claimed", actor=agent_id,
+            target=task_id, metadata={"task_type": task.task_type}
+        )
         return {"task": task.to_dict()}
 
     @app.post("/acp/{agent_id}/tasks/{task_id}/complete", tags=["acp"])
@@ -673,6 +739,10 @@ def create_app(
             "task_id": task_id,
             "result": result,
         })
+        app.state.audit.log(
+            category="acp", event="task_completed", actor=agent_id,
+            target=task_id, metadata={"result": result}
+        )
         return {"task": task.to_dict()}
 
     @app.get("/acp/{agent_id}/stream", tags=["acp"])
@@ -760,12 +830,20 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                     app, "job_completed",
                     {"job_id": job_id, "status": updated.state.value}
                 )
+                app.state.audit.log(
+                    category="job", event="job_completed", actor="system",
+                    target=job_id, metadata={"profile": record.profile, "state": updated.state.value}
+                )
                 break
 
     except asyncio.CancelledError:
         logger.info(f"[{job_id}] Job cancelled")
         await _publish_event(job_id, {"event": "cancelled"})
         _emit_coordinator_event(app, "job_status_changed", {"job_id": job_id, "status": "cancelled"})
+        app.state.audit.log(
+            category="job", event="job_cancelled", actor="system",
+            target=job_id, metadata={"reason": "CancelledError"}
+        )
     except Exception as exc:
         logger.exception(f"[{job_id}] Job failed: {exc}")
         # Mark record as failed
@@ -776,6 +854,10 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
             store.save(record)
         await _publish_event(job_id, {"event": "error", "error": str(exc)})
         _emit_coordinator_event(app, "job_failed", {"job_id": job_id, "error": str(exc)})
+        app.state.audit.log(
+            category="job", event="job_failed", actor="system",
+            target=job_id, metadata={"error": str(exc)}
+        )
     finally:
         # Cleanup
         if job_id in app.state._running_jobs:
