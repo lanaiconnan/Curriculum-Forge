@@ -437,6 +437,65 @@ def create_app(
             "tokens_prompt": metrics.get("tokens_prompt"),
             "tokens_completion": metrics.get("tokens_completion"),
         }
+    @app.get("/jobs/compare", tags=["jobs"])
+    async def compare_jobs(ids: str = Query(..., description="Comma-separated job IDs")):
+        """Compare metrics across multiple jobs."""
+        from datetime import datetime as _dt
+
+        store = app.state.store
+        job_ids = [jid.strip() for jid in ids.split(",") if jid.strip()]
+        if not job_ids:
+            raise HTTPException(status_code=400, detail="No job IDs provided")
+        if len(job_ids) > 10:
+            raise HTTPException(status_code=400, detail="Compare up to 10 jobs at a time")
+
+        jobs = []
+        for jid in job_ids:
+            record = store.load(jid)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"Job '{jid}' not found")
+            metrics = record.metrics or {}
+            phase_durations = metrics.get("phase_durations", {})
+            duration_ms = None
+            if record.finished_at and record.created_at:
+                try:
+                    start = _dt.fromisoformat(record.created_at.replace("Z", "+00:00"))
+                    end = _dt.fromisoformat(record.finished_at.replace("Z", "+00:00"))
+                    duration_ms = int((end - start).total_seconds() * 1000)
+                except Exception:
+                    pass
+            jobs.append({
+                "job_id": jid,
+                "profile": record.profile,
+                "phase": record.phase,
+                "state": record.state.value,
+                "duration_ms": duration_ms,
+                "started_at": record.created_at,
+                "finished_at": record.finished_at,
+                "providers_run": metrics.get("providers_run", 0),
+                "providers_succeeded": metrics.get("providers_succeeded", 0),
+                "retry_count": record.retry_count,
+                "max_retries": record.max_retries,
+                "phase_durations": phase_durations,
+                "tokens_used": metrics.get("tokens_used"),
+                "tokens_prompt": metrics.get("tokens_prompt"),
+                "tokens_completion": metrics.get("tokens_completion"),
+                "error": metrics.get("error"),
+            })
+
+        # Compute summary stats across compared jobs
+        durations = [j["duration_ms"] for j in jobs if j["duration_ms"] is not None]
+        summary = {
+            "count": len(jobs),
+            "avg_duration_ms": sum(durations) / len(durations) if durations else None,
+            "min_duration_ms": min(durations) if durations else None,
+            "max_duration_ms": max(durations) if durations else None,
+            "total_providers_run": sum(j["providers_run"] for j in jobs),
+            "total_providers_succeeded": sum(j["providers_succeeded"] for j in jobs),
+            "total_retries": sum(j["retry_count"] for j in jobs),
+        }
+        return {"jobs": jobs, "summary": summary}
+
     @app.post("/jobs/{job_id}/resume", tags=["jobs"])
     async def resume_job(job_id: str, background_tasks: BackgroundTasks):
         """Resume a failed/pending job."""

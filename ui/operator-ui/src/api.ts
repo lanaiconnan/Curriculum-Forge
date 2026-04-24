@@ -289,3 +289,46 @@ export function subscribeCoordinatorEvents(
     onDisconnect: handlers?.onDisconnect,
   });
 }
+
+// ── Job Comparison ──────────────────────────────────────────────────────────
+
+export interface ComparedJob {
+  job_id: string;
+  profile: string;
+  phase: string;
+  state: string;
+  duration_ms: number | null;
+  started_at: string;
+  finished_at: string | null;
+  providers_run: number;
+  providers_succeeded: number;
+  retry_count: number;
+  max_retries: number;
+  phase_durations: Record<string, number>;
+  tokens_used: number | null;
+  tokens_prompt: number | null;
+  tokens_completion: number | null;
+  error: string | null;
+}
+
+export interface CompareResult {
+  jobs: ComparedJob[];
+  summary: {
+    count: number;
+    avg_duration_ms: number | null;
+    min_duration_ms: number | null;
+    max_duration_ms: number | null;
+    total_providers_run: number;
+    total_providers_succeeded: number;
+    total_retries: number;
+  };
+}
+
+export async function compareJobs(ids: string[]): Promise<CompareResult> {
+  const res = await fetch(`${API_BASE}/jobs/compare?ids=${ids.join(',')}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to compare jobs');
+  }
+  return res.json();
+}

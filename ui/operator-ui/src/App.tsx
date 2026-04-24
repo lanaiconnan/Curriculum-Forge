@@ -4,12 +4,13 @@ import {
   listProfiles, healthCheck, subscribeJob, subscribeCoordinatorEvents,
   listPlugins, enablePlugin, disablePlugin, updatePluginConfig,
   getAuditLogs, getAuditStats, getStats, getStatsTimeseries,
-  type Job, type Profile, type StatsBucket,
+  compareJobs,
+  type Job, type Profile, type StatsBucket, type CompareResult,
 } from './api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'jobs' | 'plugins' | 'audit' | 'config';
+type Tab = 'jobs' | 'plugins' | 'audit' | 'config' | 'compare';
 
 interface Plugin {
   name: string;
@@ -874,6 +875,138 @@ function ConfigTab() {
   );
 }
 
+// ── Compare Tab ─────────────────────────────────────────────────────────────────
+
+function CompareTab() {
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [result, setResult] = useState<CompareResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [comparing, setComparing] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    listJobs({ limit: 100 }).then(setJobs).catch(e => setError(String(e))).finally(() => setLoading(false));
+  }, []);
+
+  const toggle = (id: string) => {
+    const next = new Set(selectedIds);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelectedIds(next);
+  };
+
+  const runCompare = async () => {
+    if (selectedIds.size < 2) return;
+    setComparing(true); setError('');
+    try {
+      const data = await compareJobs(Array.from(selectedIds));
+      setResult(data);
+    } catch (e) { setError(String(e)); }
+    finally { setComparing(false); }
+  };
+
+  if (loading) return <LoadingSpinner msg="Loading jobs…" />;
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-medium">Job Comparison</h2>
+      <p className="text-gray-500 text-sm">Select 2–10 jobs to compare metrics side-by-side.</p>
+
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+
+      {/* Job selector */}
+      <div className="bg-gray-900/50 border border-gray-800 rounded p-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-gray-400">{selectedIds.size} selected</span>
+          <button
+            onClick={runCompare}
+            disabled={selectedIds.size < 2 || comparing}
+            className="btn-primary text-sm disabled:opacity-50"
+          >
+            {comparing ? 'Comparing…' : 'Compare'}
+          </button>
+        </div>
+        <div className="max-h-64 overflow-y-auto space-y-1">
+          {jobs.map(j => (
+            <label key={j.id} className="flex items-center gap-2 px-2 py-1 hover:bg-gray-800/50 rounded cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(j.id)}
+                onChange={() => toggle(j.id)}
+                className="rounded border-gray-600"
+              />
+              <span className="text-sm font-mono text-gray-300">{j.id.slice(0, 8)}</span>
+              <span className={`text-xs ${j.status === 'completed' ? 'text-green-400' : j.status === 'failed' ? 'text-red-400' : 'text-gray-500'}`}>
+                {j.status}
+              </span>
+              <span className="text-xs text-gray-600">{j.profile}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Comparison result */}
+      {result && (
+        <div className="space-y-4">
+          {/* Summary */}
+          <div className="grid grid-cols-4 gap-3">
+            <div className="bg-gray-900/50 border border-gray-800 rounded p-3 text-center">
+              <div className="text-2xl font-bold text-indigo-400">{result.summary.count}</div>
+              <div className="text-xs text-gray-500">Jobs</div>
+            </div>
+            <div className="bg-gray-900/50 border border-gray-800 rounded p-3 text-center">
+              <div className="text-2xl font-bold text-blue-400">{result.summary.avg_duration_ms ? (result.summary.avg_duration_ms / 1000).toFixed(1) + 's' : '—'}</div>
+              <div className="text-xs text-gray-500">Avg Duration</div>
+            </div>
+            <div className="bg-gray-900/50 border border-gray-800 rounded p-3 text-center">
+              <div className="text-2xl font-bold text-green-400">{result.summary.total_providers_succeeded}/{result.summary.total_providers_run}</div>
+              <div className="text-xs text-gray-500">Providers OK</div>
+            </div>
+            <div className="bg-gray-900/50 border border-gray-800 rounded p-3 text-center">
+              <div className="text-2xl font-bold text-yellow-400">{result.summary.total_retries}</div>
+              <div className="text-xs text-gray-500">Total Retries</div>
+            </div>
+          </div>
+
+          {/* Per-job table */}
+          <div className="bg-gray-900/50 border border-gray-800 rounded overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-800/50">
+                <tr>
+                  <th className="px-3 py-2 text-left text-gray-400">Job</th>
+                  <th className="px-3 py-2 text-left text-gray-400">Profile</th>
+                  <th className="px-3 py-2 text-left text-gray-400">Duration</th>
+                  <th className="px-3 py-2 text-left text-gray-400">Providers</th>
+                  <th className="px-3 py-2 text-left text-gray-400">Retries</th>
+                  <th className="px-3 py-2 text-left text-gray-400">Tokens</th>
+                  <th className="px-3 py-2 text-left text-gray-400">State</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.jobs.map(j => (
+                  <tr key={j.job_id} className="border-t border-gray-800">
+                    <td className="px-3 py-2 font-mono text-xs text-indigo-300">{j.job_id.slice(0, 8)}</td>
+                    <td className="px-3 py-2 text-gray-300">{j.profile}</td>
+                    <td className="px-3 py-2 text-gray-300">{j.duration_ms ? (j.duration_ms / 1000).toFixed(2) + 's' : '—'}</td>
+                    <td className="px-3 py-2 text-gray-300">{j.providers_succeeded}/{j.providers_run}</td>
+                    <td className="px-3 py-2 text-gray-300">{j.retry_count}</td>
+                    <td className="px-3 py-2 text-gray-300">{j.tokens_used ?? '—'}</td>
+                    <td className="px-3 py-2">
+                      <span className={`badge ${j.state === 'completed' ? 'badge-completed' : j.state === 'failed' ? 'badge-failed' : 'badge-running'}`}>
+                        {j.state}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -943,6 +1076,7 @@ export default function App() {
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'jobs', label: 'Jobs' },
+    { key: 'compare', label: 'Compare' },
     { key: 'plugins', label: 'Plugins' },
     { key: 'audit', label: 'Audit' },
     { key: 'config', label: 'Config' },
@@ -1025,6 +1159,7 @@ export default function App() {
         {tab === 'plugins' && <PluginsTab />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'config' && <ConfigTab />}
+        {tab === 'compare' && <CompareTab />}
       </main>
 
       {/* Create modal */}
