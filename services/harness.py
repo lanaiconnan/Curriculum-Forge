@@ -350,6 +350,25 @@ class HarnessRunner:
         self.scorer = scorer or HarnessScorer()
         self.on_result = on_result
 
+    def _normalize_tool_calls(self, tool_calls):
+        """
+        Normalize tool calls to (name, params) tuples.
+
+        Accepts:
+          - dict: {"name": "foo", "input": {"x": 1}}  → ("foo", {"x": 1})
+          - ToolCall object                               → (name, input)
+
+        Returns a list of (name, params) tuples.
+        """
+        from forge.adapters import ToolCall
+        result = []
+        for tc in tool_calls:
+            if isinstance(tc, ToolCall):
+                result.append((tc.name, tc.input))
+            else:
+                result.append((tc["name"], tc.get("input", {})))
+        return result
+
     def run_case(self, case: HarnessCase) -> CaseResult:
         """Run a single harness case"""
         start = time.time()
