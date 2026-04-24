@@ -107,6 +107,34 @@ def _emit_coordinator_event(app, event_type: str, payload: Dict[str, Any]) -> No
     coordinator = getattr(app.state, "coordinator", None)
     if coordinator is not None and coordinator.event_bus is not None:
         coordinator.event_bus.emit_sync(event_type, payload)
+
+
+def _register_job_with_coordinator(
+    app, record: "CheckpointRecord", profile_name: str
+) -> Optional[str]:
+    """
+    Register a job with the Coordinator by creating a Workflow.
+
+    This bridges the Gateway → Coordinator gap: the Coordinator becomes
+    aware of all jobs created via the Gateway REST API.
+
+    Returns the workflow_id if registered, None if Coordinator unavailable.
+    """
+    coordinator = getattr(app.state, "coordinator", None)
+    if coordinator is None:
+        logger.debug("Coordinator not available, skipping workflow registration")
+        return None
+
+    try:
+        workflow = coordinator.create_workflow(
+            name=f"job_{record.id}",
+            description=f"Gateway job: {record.id} (profile={profile_name})",
+        )
+        logger.info(f"Registered job {record.id} with Coordinator as workflow {workflow.id}")
+        return workflow.id
+    except Exception as e:
+        logger.warning(f"Failed to register job {record.id} with Coordinator: {e}")
+        return None
     # Also push to per-job SSE queue so /jobs/{id}/stream subscribers receive it
     job_id = payload.get("job_id")
     if job_id:
@@ -287,9 +315,14 @@ def create_app(
                 description=proposal.get("description", ""),
             )
             store.save(record)
+            # Register with Coordinator (bridges Gateway→Coordinator gap)
+            workflow_id = _register_job_with_coordinator(app, record, record.profile)
+            if workflow_id:
+                record.workflow_id = workflow_id
+                store.save(record)
             _emit_coordinator_event(
                 app, "job_created",
-                {"job_id": run_id, "profile": record.profile, "status": record.state.value}
+                {"job_id": run_id, "profile": record.profile, "status": record.state.value, "workflow_id": workflow_id}
             )
             _dispatch_hook(app, "job:before_run", {
                 "job_id": run_id, "profile": record.profile, "phase": record.phase
@@ -334,9 +367,14 @@ def create_app(
             description=body.get("description", f"Job from profile '{profile_name}'"),
         )
         store.save(record)
+        # Register with Coordinator (bridges Gateway→Coordinator gap)
+        workflow_id = _register_job_with_coordinator(app, record, profile_name)
+        if workflow_id:
+            record.workflow_id = workflow_id
+            store.save(record)
         _emit_coordinator_event(
             app, "job_created",
-            {"job_id": run_id, "profile": profile_name, "status": "pending"}
+            {"job_id": run_id, "profile": profile_name, "status": "pending", "workflow_id": workflow_id}
         )
         _dispatch_hook(app, "job:before_run", {
             "job_id": run_id, "profile": profile_name, "phase": record.phase
@@ -1091,6 +1129,7 @@ def _record_to_api(record: CheckpointRecord, include_state_data: bool = False) -
         "workspace_dir": record.workspace_dir,
         "retry_count": record.retry_count,
         "max_retries": record.max_retries,
+        "workflow_id": getattr(record, "workflow_id", None),
         "config": record.config,
     }
     if include_state_data:

@@ -43,6 +43,7 @@ class CheckpointRecord:
     workspace_dir: Optional[str] = None  # Per-run workspace directory
     retry_count: int = 0  # Number of retry attempts made
     max_retries: int = 3  # Maximum retry attempts allowed (0 = disabled)
+    workflow_id: Optional[str] = None  # Coordinator Workflow ID (set by Gateway when job is registered with Coordinator)
     
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（含 RunState enum 处理）"""
