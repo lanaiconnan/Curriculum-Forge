@@ -846,18 +846,40 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
         )
     except Exception as exc:
         logger.exception(f"[{job_id}] Job failed: {exc}")
-        # Mark record as failed
         record = store.load(job_id)
         if record:
-            record.state = RunState.FAILED
-            record.finished_at = datetime.now(timezone.utc).isoformat()
-            store.save(record)
-        await _publish_event(job_id, {"event": "error", "error": str(exc)})
-        _emit_coordinator_event(app, "job_failed", {"job_id": job_id, "error": str(exc)})
-        app.state.audit.log(
-            category="job", event="job_failed", actor="system",
-            target=job_id, metadata={"error": str(exc)}
-        )
+            record.retry_count += 1
+            if record.retry_count <= record.max_retries:
+                # Retry: re-queue the job
+                logger.info(f"[{job_id}] Scheduling retry {record.retry_count}/{record.max_retries}")
+                record.state = RunState.PENDING
+                record.finished_at = None
+                store.save(record)
+                app.state.audit.log(
+                    category="job", event="job_retry_scheduled", actor="system",
+                    target=job_id,
+                    metadata={"retry": record.retry_count, "error": str(exc)}
+                )
+                await _publish_event(job_id, {
+                    "event": "retry_scheduled",
+                    "retry": record.retry_count,
+                    "max_retries": record.max_retries,
+                })
+                # Re-dispatch to background task
+                asyncio.create_task(_run_job_background(job_id, app))
+                # Don't clean up _running_jobs yet — the new task will
+                return
+            else:
+                # Exhausted retries — mark permanently failed
+                record.state = RunState.FAILED
+                record.finished_at = datetime.now(timezone.utc).isoformat()
+                store.save(record)
+                await _publish_event(job_id, {"event": "error", "error": str(exc)})
+                _emit_coordinator_event(app, "job_failed", {"job_id": job_id, "error": str(exc)})
+                app.state.audit.log(
+                    category="job", event="job_failed", actor="system",
+                    target=job_id, metadata={"error": str(exc), "retries": record.retry_count}
+                )
     finally:
         # Cleanup
         if job_id in app.state._running_jobs:
@@ -889,6 +911,8 @@ def _record_to_api(record: CheckpointRecord, include_state_data: bool = False) -
         "finished_at": record.finished_at,
         "metrics": record.metrics,
         "workspace_dir": record.workspace_dir,
+        "retry_count": record.retry_count,
+        "max_retries": record.max_retries,
     }
     if include_state_data:
         result["config"] = record.config

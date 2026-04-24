@@ -41,6 +41,8 @@ class CheckpointRecord:
     description: str = ""            # 运行描述
     finished_at: Optional[str] = None  # 完成时间
     workspace_dir: Optional[str] = None  # Per-run workspace directory
+    retry_count: int = 0  # Number of retry attempts made
+    max_retries: int = 3  # Maximum retry attempts allowed (0 = disabled)
     
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典（含 RunState enum 处理）"""
