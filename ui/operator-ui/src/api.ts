@@ -80,6 +80,30 @@ export async function createJob(req: CreateJobRequest): Promise<Job> {
   return data.job;
 }
 
+export interface JobMetrics {
+  job_id: string;
+  phase: string;
+  state: string;
+  duration_ms: number | null;
+  started_at: string;
+  finished_at: string | null;
+  providers_run: number;
+  providers_succeeded: number;
+  retry_count: number;
+  max_retries: number;
+  error: string | null;
+  phase_durations: Record<string, number>;
+  tokens_used: number | null;
+  tokens_prompt: number | null;
+  tokens_completion: number | null;
+}
+
+export async function getJobMetrics(id: string): Promise<JobMetrics> {
+  const res = await fetch(`${API_BASE}/jobs/${id}/metrics`);
+  if (!res.ok) throw new Error(`Failed to get metrics for job ${id}: ${res.statusText}`);
+  return res.json();
+}
+
 export async function resumeJob(id: string): Promise<Job> {
   const res = await fetch(`${API_BASE}/jobs/${id}/resume`, { method: 'POST' });
   if (!res.ok) throw new Error(`Failed to resume job: ${res.statusText}`);

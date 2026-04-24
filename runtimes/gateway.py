@@ -1,13 +1,13 @@
 """
-Gateway HTTP Service — FastAPI + Operator Web UI
+Gateway HTTP Service - FastAPI + Operator Web UI
 
-提供：
-- REST API：任务管理（创建/查询/恢复/中止）
-- SSE：任务实时进度推送
-- Web UI：可视化 Operator 控制台
+提供:
+- REST API:任务管理(创建/查询/恢复/中止)
+- SSE:任务实时进度推送
+- Web UI:可视化 Operator 控制台
 
-端口：8765
-静态文件：ui/operator-ui/dist/
+端口:8765
+静态文件:ui/operator-ui/dist/
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def _get_acp_registry():
     from acp.protocol import ACPSessionRegistry
     return ACPSessionRegistry
 
-# ── Lazy Imports（避免循环导入）────────────────────────────────────────────────
+# ── Lazy Imports(避免循环导入)────────────────────────────────────────────────
 
 def _get_adaptive_runtime():
     from runtimes.adaptive_runtime import AdaptiveRuntime, PipelineConfig
@@ -189,7 +189,7 @@ def create_app(
     # ── Audit Logger ───────────────────────────────────────────────────────
     app.state.audit = AuditLogger(source="gateway")
 
-    # ── Bridge（Channel → Job）──────────────────────────────────────────
+    # ── Bridge(Channel → Job)──────────────────────────────────────────
     _, _, create_bridge = _get_bridge()
     app.state.bridge = create_bridge(gateway_url="http://localhost:8765")
 
@@ -399,12 +399,12 @@ def create_app(
     async def get_job_metrics(job_id: str):
         """Get a job's execution metrics and statistics."""
         from datetime import datetime
-        
+
         store = app.state.store
         record = store.load(job_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
-        
+
         # Calculate duration if completed
         duration_ms = None
         if record.finished_at and record.created_at:
@@ -414,9 +414,10 @@ def create_app(
                 duration_ms = int((end - start).total_seconds() * 1000)
             except Exception:
                 pass
-        
+
         metrics = record.metrics or {}
-        
+        phase_durations = metrics.get("phase_durations", {})
+
         return {
             "job_id": job_id,
             "phase": record.phase,
@@ -429,6 +430,12 @@ def create_app(
             "retry_count": record.retry_count,
             "max_retries": record.max_retries,
             "error": metrics.get("error"),
+            # 分阶段耗时 breakdown
+            "phase_durations": phase_durations,
+            # Token 消耗（如果 Provider 记录了）
+            "tokens_used": metrics.get("tokens_used"),
+            "tokens_prompt": metrics.get("tokens_prompt"),
+            "tokens_completion": metrics.get("tokens_completion"),
         }
     @app.post("/jobs/{job_id}/resume", tags=["jobs"])
     async def resume_job(job_id: str, background_tasks: BackgroundTasks):
@@ -597,19 +604,19 @@ def create_app(
     async def stats_timeseries(hours: int = 24):
         """
         Time-series statistics for trend visualization.
-        
+
         Returns hourly buckets of job statistics for the last N hours.
         """
         from datetime import datetime, timedelta, timezone
         from collections import defaultdict
-        
+
         store = app.state.store
         records = store.list_all()
-        
+
         # Calculate time range
         now = datetime.now(timezone.utc)
         start_time = now - timedelta(hours=hours)
-        
+
         # Initialize buckets
         buckets = {}
         for h in range(hours):
@@ -624,28 +631,28 @@ def create_app(
                 "job_count_with_duration": 0,
                 "retries": 0,
             }
-        
+
         # Populate buckets
         for record in records:
             try:
                 created = datetime.fromisoformat(record.created_at.replace("Z", "+00:00"))
                 if created < start_time:
                     continue
-                    
+
                 bucket_key = created.strftime("%Y-%m-%dT%H:00:00Z")
                 if bucket_key not in buckets:
                     continue
-                    
+
                 bucket = buckets[bucket_key]
                 bucket["total"] += 1
-                
+
                 if record.state.value == "completed":
                     bucket["completed"] += 1
                 elif record.state.value in ("failed", "cancelled", "aborted"):
                     bucket["failed"] += 1
-                
+
                 bucket["retries"] += record.retry_count
-                
+
                 # Duration
                 if record.finished_at and record.created_at:
                     try:
@@ -658,7 +665,7 @@ def create_app(
                         pass
             except Exception:
                 pass
-        
+
         # Calculate averages
         result = []
         for bucket_key in sorted(buckets.keys()):
@@ -676,7 +683,7 @@ def create_app(
                 "avg_duration_ms": avg_duration,
                 "retries": bucket["retries"],
             })
-        
+
         return {"buckets": result, "hours": hours}
 
     # ── Audit API ──────────────────────────────────────────────────────────────
@@ -849,11 +856,11 @@ def create_app(
         coordinator = getattr(app.state, "coordinator", None)
         if coordinator is None:
             raise HTTPException(status_code=503, detail="No coordinator configured")
-        
+
         workflow = coordinator.get_workflow(workflow_id)
         if workflow is None:
             raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
-        
+
         async def _gen():
             sub_id = coordinator.event_bus.subscribe()
             queue = coordinator.event_bus.get_queue(sub_id)
@@ -864,7 +871,7 @@ def create_app(
                         payload = event.get("payload", {})
                         if payload.get("workflow_id") == workflow_id or event["type"] in ("task_assigned", "task_completed", "task_failed", "agent_status_changed"):
                             yield sse_starlette.SSEEvent(data=json.dumps(event, ensure_ascii=False))
-                        
+
                         if event["type"] == "workflow_completed" and payload.get("workflow_id") == workflow_id:
                             break
                     except asyncio.TimeoutError:
@@ -873,7 +880,7 @@ def create_app(
                 pass
             finally:
                 coordinator.event_bus.unsubscribe(sub_id)
-        
+
         return sse_starlette.EventSourceResponse(_gen())
 
     @app.get("/coordinator/events", tags=["coordinator"])
@@ -882,7 +889,7 @@ def create_app(
         coordinator = getattr(app.state, "coordinator", None)
         if coordinator is None:
             raise HTTPException(status_code=503, detail="No coordinator configured")
-        
+
         async def _gen():
             sub_id = coordinator.event_bus.subscribe()
             queue = coordinator.event_bus.get_queue(sub_id)
@@ -897,7 +904,7 @@ def create_app(
                 pass
             finally:
                 coordinator.event_bus.unsubscribe(sub_id)
-        
+
         return sse_starlette.EventSourceResponse(_gen())
 
     @app.post("/workflows", tags=["workflows"], status_code=201)
@@ -944,7 +951,7 @@ def create_app(
         }
 
     # ════════════════════════════════════════════════════════════════════════
-    # ACP — Agent Control Protocol
+    # ACP - Agent Control Protocol
     # ════════════════════════════════════════════════════════════════════════
 
     from acp.protocol import ACPAgent, ACPTask, ACPTaskStatus, ACPAgentStatus, new_task_id
@@ -1192,10 +1199,10 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                 })
                 # Re-dispatch to background task
                 asyncio.create_task(_run_job_background(job_id, app))
-                # Don't clean up _running_jobs yet — the new task will
+                # Don't clean up _running_jobs yet - the new task will
                 return
             else:
-                # Exhausted retries — mark permanently failed
+                # Exhausted retries - mark permanently failed
                 record.state = RunState.FAILED
                 record.finished_at = datetime.now(timezone.utc).isoformat()
                 store.save(record)
@@ -1284,40 +1291,40 @@ def setup_feishu_webhook(
 ) -> "FeishuAdapter":
     """
     在 FastAPI 应用中注册飞书 Webhook
-    
+
     Args:
         app: FastAPI 应用实例
         app_id: 飞书应用 ID
         app_secret: 飞书应用密钥
-        encrypt_key: 事件加密密钥（可选）
-        verification_token: 事件验证 token（可选）
+        encrypt_key: 事件加密密钥(可选)
+        verification_token: 事件验证 token(可选)
         webhook_path: Webhook 路径
         on_message: 消息回调函数
-    
+
     Returns:
         FeishuAdapter 实例
     """
     FeishuAdapter, FeishuConfig, register_feishu_webhook = _get_feishu_adapter()
-    
+
     config = FeishuConfig(
         app_id=app_id,
         app_secret=app_secret,
         encrypt_key=encrypt_key,
         verification_token=verification_token,
     )
-    
-    # 如果未提供 on_message，使用 bridge 的默认处理器
+
+    # 如果未提供 on_message,使用 bridge 的默认处理器
     if on_message is None and hasattr(app.state, "bridge"):
         on_message = app.state.bridge.on_message
-    
+
     adapter = FeishuAdapter(config=config, on_message=on_message)
-    
+
     # 注册 webhook 路由
     register_feishu_webhook(app, adapter, path=webhook_path)
-    
+
     # 存储到 app.state
     app.state.feishu_adapter = adapter
-    
+
     logger.info(f"飞书 Webhook 已注册: {webhook_path}")
     return adapter
 
@@ -1335,39 +1342,39 @@ def setup_weixin_webhook(
 ) -> "WeixinAdapter":
     """
     在 FastAPI 应用中注册微信 Webhook
-    
+
     Args:
         app: FastAPI 应用实例
         app_id: 微信公众号 AppID
         app_secret: 微信公众号 AppSecret
         token: 微信公众平台配置的 Token
-        encoding_aes_key: 消息加解密密钥（可选）
+        encoding_aes_key: 消息加解密密钥(可选)
         webhook_path: Webhook 路径
         on_message: 消息回调函数
-    
+
     Returns:
         WeixinAdapter 实例
     """
     WeixinAdapter, WeixinConfig, register_weixin_webhook = _get_weixin_adapter()
-    
+
     config = WeixinConfig(
         app_id=app_id,
         app_secret=app_secret,
         token=token,
         encoding_aes_key=encoding_aes_key,
     )
-    
-    # 如果未提供 on_message，使用 bridge 的默认处理器
+
+    # 如果未提供 on_message,使用 bridge 的默认处理器
     if on_message is None and hasattr(app.state, "bridge"):
         on_message = app.state.bridge.on_message
-    
+
     adapter = WeixinAdapter(config=config, on_message=on_message)
-    
+
     # 注册 webhook 路由
     register_weixin_webhook(app, adapter, path=webhook_path)
-    
+
     # 存储到 app.state
     app.state.weixin_adapter = adapter
-    
+
     logger.info(f"微信 Webhook 已注册: {webhook_path}")
     return adapter

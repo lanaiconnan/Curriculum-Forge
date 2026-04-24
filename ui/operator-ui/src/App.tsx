@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  listJobs, getJob, createJob, resumeJob, abortJob,
+  listJobs, getJob, getJobMetrics, createJob, resumeJob, abortJob,
   listProfiles, healthCheck, subscribeJob, subscribeCoordinatorEvents,
   listPlugins, enablePlugin, disablePlugin, updatePluginConfig,
   getAuditLogs, getAuditStats, getStats,
@@ -244,6 +244,21 @@ function JobDetail({
     finally { setLoading(false); }
   };
 
+  const [metrics, setMetrics] = useState<import('./api').JobMetrics | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
+  // Load metrics when Metrics tab is active
+  useEffect(() => {
+    if (activeSection !== 'metrics') return;
+    let cancelled = false;
+    setMetricsLoading(true);
+    getJobMetrics(job.id)
+      .then(m => { if (!cancelled) setMetrics(m); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setMetricsLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeSection, job.id]);
+
   const sections = [
     { key: 'phases', label: 'Phases' },
     { key: 'log', label: 'Live Log' },
@@ -346,14 +361,82 @@ function JobDetail({
 
       {/* Metrics */}
       {activeSection === 'metrics' && (
-        <div className="card p-4">
-          {job.metrics && Object.keys(job.metrics).length > 0 ? (
-            <pre className="text-xs text-gray-300 overflow-x-auto">
-              {JSON.stringify(job.metrics, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-gray-500 text-sm">No metrics recorded yet.</p>
-          )}
+        <div className="space-y-4">
+          {metricsLoading && <p className="text-gray-500 text-sm">Loading metrics…</p>}
+          {metrics && (<>
+            {/* Overview cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gray-900 rounded p-3 border border-gray-800">
+                <div className="text-lg font-bold text-white">{metrics.duration_ms != null ? `${(metrics.duration_ms / 1000).toFixed(1)}s` : '—'}</div>
+                <div className="text-xs text-gray-500">Total Duration</div>
+              </div>
+              <div className="bg-gray-900 rounded p-3 border border-gray-800">
+                <div className="text-lg font-bold text-green-400">{metrics.providers_succeeded}/{metrics.providers_run}</div>
+                <div className="text-xs text-gray-500">Providers OK</div>
+              </div>
+              <div className="bg-gray-900 rounded p-3 border border-gray-800">
+                <div className="text-lg font-bold text-yellow-400">{metrics.retry_count}/{metrics.max_retries}</div>
+                <div className="text-xs text-gray-500">Retries</div>
+              </div>
+              <div className="bg-gray-900 rounded p-3 border border-gray-800">
+                <div className="text-lg font-bold text-purple-400">{metrics.tokens_used?.toLocaleString?.() ?? '—'}</div>
+                <div className="text-xs text-gray-500">Tokens Used</div>
+              </div>
+            </div>
+
+            {/* Phase Durations Breakdown */}
+            {Object.keys(metrics.phase_durations).length > 0 && (
+              <div className="card overflow-hidden">
+                <h3 className="px-4 pt-3 pb-2 text-sm font-medium text-gray-400">Phase Duration Breakdown</h3>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800 text-left text-gray-500 text-xs">
+                      <th className="px-4 py-2 font-medium">Phase</th>
+                      <th className="px-4 py-2 font-medium">Duration</th>
+                      <th className="px-4 py-2 font-medium">Bar</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(metrics.phase_durations).map(([phase, ms]) => {
+                      const maxMs = Math.max(...Object.values(metrics.phase_durations));
+                      const pct = maxMs > 0 ? (ms / maxMs) * 100 : 0;
+                      return (
+                        <tr key={phase} className="border-b border-gray-800/50">
+                          <td className="px-4 py-3 font-mono text-indigo-300">{phase}</td>
+                          <td className="px-4 py-3 text-gray-300">{ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`}</td>
+                          <td className="px-4 py-3">
+                            <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+                              <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Token detail */}
+            {(metrics.tokens_prompt || metrics.tokens_completion) && (
+              <div className="card p-4">
+                <h3 className="text-sm font-medium text-gray-400 mb-2">Token Usage</h3>
+                <div className="grid grid-cols-3 gap-3 text-sm">
+                  <div><span className="text-gray-500">Prompt:</span> <span className="text-white">{metrics.tokens_prompt?.toLocaleString?.() ?? '—'}</span></div>
+                  <div><span className="text-gray-500">Completion:</span> <span className="text-white">{metrics.tokens_completion?.toLocaleString?.() ?? '—'}</span></div>
+                  <div><span className="text-gray-500">Total:</span> <span className="text-white">{metrics.tokens_used?.toLocaleString?.() ?? '—'}</span></div>
+                </div>
+              </div>
+            )}
+
+            {/* Error */}
+            {metrics.error && (
+              <div className="card p-4 border-l-4 border-red-500">
+                <h3 className="text-sm font-medium text-red-400 mb-1">Error</h3>
+                <pre className="text-xs text-gray-300 overflow-x-auto">{metrics.error}</pre>
+              </div>
+            )}
+          </>)}
         </div>
       )}
     </div>

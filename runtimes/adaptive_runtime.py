@@ -105,6 +105,10 @@ class AdaptiveRuntime:
         providers_to_run = self.config.providers
         self._provider_index = 0
 
+        # 记录每个 phase 的执行时间
+        phase_durations: Dict[str, int] = {}
+        self._record.metrics["phase_durations"] = phase_durations
+
         try:
             for idx, provider in enumerate(providers_to_run):
                 self._provider_index = idx
@@ -112,7 +116,12 @@ class AdaptiveRuntime:
 
                 yield {"event": "phase_start", "phase": phase_name, "index": idx}
 
+                # 记录 phase 开始时间
+                phase_start = datetime.now(timezone.utc)
                 output = await self._execute_provider(provider, run_config)
+                phase_end = datetime.now(timezone.utc)
+                phase_duration_ms = int((phase_end - phase_start).total_seconds() * 1000)
+                phase_durations[phase_name] = phase_duration_ms
 
                 self._record.state_data[phase_name] = output.to_dict()
                 self._record.metrics["providers_run"] += 1
@@ -199,13 +208,23 @@ class AdaptiveRuntime:
         )
         self._save()
 
+        # 记录每个 phase 的执行时间
+        phase_durations: Dict[str, int] = {}
+        self._record.metrics["phase_durations"] = phase_durations
+
         providers_to_run = self.config.providers
         self._provider_index = 0
 
         try:
             for idx, provider in enumerate(providers_to_run):
                 self._provider_index = idx
+                # 记录 phase 开始时间
+                phase_start = datetime.now(timezone.utc)
                 output = await self._execute_provider(provider, run_config)
+                phase_end = datetime.now(timezone.utc)
+                phase_duration_ms = int((phase_end - phase_start).total_seconds() * 1000)
+                phase_durations[provider.phase.value] = phase_duration_ms
+
                 self._record.state_data[provider.phase.value] = output.to_dict()
                 self._record.metrics["providers_run"] += 1
                 if output.ok:
@@ -267,11 +286,21 @@ class AdaptiveRuntime:
 
         resume_config = {**saved.config, **(config or {})}
 
+        # 继续记录 phase 耗时（如果已有则继承）
+        phase_durations = self._record.metrics.get("phase_durations", {})
+        self._record.metrics["phase_durations"] = phase_durations
+
         try:
             for provider in providers_to_run:
                 self._record.phase = provider.phase.value
                 self._record.state = RunState.RUNNING
+                # 记录 phase 开始时间
+                phase_start = datetime.now(timezone.utc)
                 output = await self._execute_provider(provider, resume_config)
+                phase_end = datetime.now(timezone.utc)
+                phase_duration_ms = int((phase_end - phase_start).total_seconds() * 1000)
+                phase_durations[provider.phase.value] = phase_duration_ms
+
                 self._record.state_data[provider.phase.value] = output.to_dict()
                 self._record.metrics["providers_run"] += 1
                 if output.ok:
