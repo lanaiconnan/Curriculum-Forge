@@ -592,6 +592,93 @@ def create_app(
         store = app.state.store
         return store.summary()
 
+
+    @app.get("/stats/timeseries", tags=["system"])
+    async def stats_timeseries(hours: int = 24):
+        """
+        Time-series statistics for trend visualization.
+        
+        Returns hourly buckets of job statistics for the last N hours.
+        """
+        from datetime import datetime, timedelta, timezone
+        from collections import defaultdict
+        
+        store = app.state.store
+        records = store.list_all()
+        
+        # Calculate time range
+        now = datetime.now(timezone.utc)
+        start_time = now - timedelta(hours=hours)
+        
+        # Initialize buckets
+        buckets = {}
+        for h in range(hours):
+            bucket_time = start_time + timedelta(hours=h)
+            bucket_key = bucket_time.strftime("%Y-%m-%dT%H:00:00Z")
+            buckets[bucket_key] = {
+                "timestamp": bucket_key,
+                "total": 0,
+                "completed": 0,
+                "failed": 0,
+                "total_duration_ms": 0,
+                "job_count_with_duration": 0,
+                "retries": 0,
+            }
+        
+        # Populate buckets
+        for record in records:
+            try:
+                created = datetime.fromisoformat(record.created_at.replace("Z", "+00:00"))
+                if created < start_time:
+                    continue
+                    
+                bucket_key = created.strftime("%Y-%m-%dT%H:00:00Z")
+                if bucket_key not in buckets:
+                    continue
+                    
+                bucket = buckets[bucket_key]
+                bucket["total"] += 1
+                
+                if record.state.value == "completed":
+                    bucket["completed"] += 1
+                elif record.state.value in ("failed", "cancelled", "aborted"):
+                    bucket["failed"] += 1
+                
+                bucket["retries"] += record.retry_count
+                
+                # Duration
+                if record.finished_at and record.created_at:
+                    try:
+                        start = datetime.fromisoformat(record.created_at.replace("Z", "+00:00"))
+                        end = datetime.fromisoformat(record.finished_at.replace("Z", "+00:00"))
+                        duration_ms = int((end - start).total_seconds() * 1000)
+                        bucket["total_duration_ms"] += duration_ms
+                        bucket["job_count_with_duration"] += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        
+        # Calculate averages
+        result = []
+        for bucket_key in sorted(buckets.keys()):
+            bucket = buckets[bucket_key]
+            avg_duration = (
+                bucket["total_duration_ms"] // bucket["job_count_with_duration"]
+                if bucket["job_count_with_duration"] > 0
+                else 0
+            )
+            result.append({
+                "timestamp": bucket["timestamp"],
+                "total": bucket["total"],
+                "completed": bucket["completed"],
+                "failed": bucket["failed"],
+                "avg_duration_ms": avg_duration,
+                "retries": bucket["retries"],
+            })
+        
+        return {"buckets": result, "hours": hours}
+
     # ── Audit API ──────────────────────────────────────────────────────────────
 
     @app.get("/audit", tags=["audit"])
