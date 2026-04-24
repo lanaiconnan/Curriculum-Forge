@@ -107,6 +107,18 @@ def _emit_coordinator_event(app, event_type: str, payload: Dict[str, Any]) -> No
     coordinator = getattr(app.state, "coordinator", None)
     if coordinator is not None and coordinator.event_bus is not None:
         coordinator.event_bus.emit_sync(event_type, payload)
+    # Also push to per-job SSE queue so /jobs/{id}/stream subscribers receive it
+    job_id = payload.get("job_id")
+    if job_id:
+        event = {"type": event_type, **payload}
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_publish_to_job(job_id, event))
+            else:
+                loop.run_in_executor(None, lambda: None)  # no-op if no loop
+        except RuntimeError:
+            pass  # no event loop in this thread
 
 
 def _dispatch_hook(app, hook_name: str, data: Dict[str, Any]) -> None:
