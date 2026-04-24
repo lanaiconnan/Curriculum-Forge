@@ -61,17 +61,30 @@ def _build_provider_chain() -> List[TaskProvider]:
 
 # ── Service Container Builder ─────────────────────────────────────────────────
 
-def _build_service_container(workspace_dir: str = ".") -> ServiceContainer:
-    """Build and initialize a service container with core services."""
+def _build_service_container(
+    workspace_dir: str = ".",
+    profile: Optional[Dict[str, Any]] = None,
+) -> ServiceContainer:
+    """
+    Build and initialize a service container with core services.
+
+    Args:
+        workspace_dir: Path for service workspace.
+        profile: Profile dict used to override service config defaults.
+                 Supported keys: max_tasks_beginner, max_tasks_intermediate,
+                 max_tasks_advanced, max_iterations, llm_backend, llm_model,
+                 max_duration, max_tokens, max_turns, keep_threshold.
+    """
+    cfg = profile or {}
     container = ServiceContainer()
 
     # EnvironmentService (Agent A - Producer)
     env_config = EnvironmentServiceConfig(
         name="environment",
         workspace=workspace_dir,
-        max_tasks_beginner=2,
-        max_tasks_intermediate=3,
-        max_tasks_advanced=5,
+        max_tasks_beginner=cfg.get("max_tasks_beginner", 2),
+        max_tasks_intermediate=cfg.get("max_tasks_intermediate", 3),
+        max_tasks_advanced=cfg.get("max_tasks_advanced", 5),
     )
     container.add(EnvironmentService, env_config)
 
@@ -79,9 +92,13 @@ def _build_service_container(workspace_dir: str = ".") -> ServiceContainer:
     learner_config = LearnerServiceConfig(
         name="learner",
         workspace=workspace_dir,
-        max_iterations=3,
-        llm_backend="mock",  # Use mock backend for provider execution
-        llm_model="mock",
+        max_iterations=cfg.get("max_iterations", 3),
+        llm_backend=cfg.get("llm_backend", "mock"),
+        llm_model=cfg.get("llm_model", "mock"),
+        max_duration=cfg.get("max_duration", 300.0),
+        max_tokens=cfg.get("max_tokens", 1024),
+        max_turns=cfg.get("max_turns", 5),
+        keep_threshold=cfg.get("keep_threshold", 0.5),
     )
     container.add(LearnerService, learner_config)
 
@@ -146,13 +163,16 @@ def create_pipeline(
     # Create per-run workspace
     workspace = RunWorkspace(run_id=run_id)
 
+    # Load profile for config (needed before service container build)
+    profile = _load_profile(profile_name)
+
     # Build service container with workspace isolation
-    container = _build_service_container(workspace_dir=workspace.workspace_path())
+    container = _build_service_container(
+        workspace_dir=workspace.workspace_path(),
+        profile=profile,
+    )
 
     store = CheckpointStore(base_dir=checkpoint_dir)
-
-    # Load profile for config
-    profile = _load_profile(profile_name)
 
     # Build PipelineConfig
     config = PipelineConfig(
