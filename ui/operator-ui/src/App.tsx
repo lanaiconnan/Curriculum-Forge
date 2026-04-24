@@ -157,6 +157,16 @@ function LogPanel({ jobId, maxLines = 200 }: { jobId: string; maxLines?: number 
         setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'phase', text: `🚀 Job started (run_id: ${event.run_id})` }]);
       } else if (event.event === 'done' || event.event === 'error') {
         setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'phase', text: `■ Job ${event.event}` }]);
+      } else if (event.type === 'job_created') {
+        setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'phase', text: `▶ Job created: ${event.profile || event.job_id}` }]);
+      } else if (event.type === 'job_completed') {
+        setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'info', text: `✅ Job completed (status: ${event.status})` }]);
+      } else if (event.type === 'job_failed') {
+        setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'error', text: `❌ Job failed: ${event.error}` }]);
+      } else if (event.type === 'job_status_changed') {
+        setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'warn', text: `🔄 Job status: ${event.status}` }]);
+      } else if (event.type === 'retry_scheduled') {
+        setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: 'warn', text: `🔁 Retry ${event.retry}/${event.max_retries} scheduled` }]);
       } else if (text) {
         setLines(prev => [...prev.slice(-(maxLines - 1)), { ts, level: level as LogLine['level'], text }]);
       }
@@ -212,6 +222,8 @@ function JobDetail({
     const unsub = subscribeJob(job.id, (event) => {
       if (event.job) setJob(event.job as Job);
       else if (event.event === 'done' || event.event === 'error') {
+        getJob(job.id).then(setJob).catch(() => {});
+      } else if (event.type === 'job_completed' || event.type === 'job_failed') {
         getJob(job.id).then(setJob).catch(() => {});
       }
     });
