@@ -54,6 +54,11 @@ from runtimes.workspace import RunWorkspace
 
 from audit import AuditLogger
 
+# ── Plugin System ─────────────────────────────────────────────────────────────
+
+from services.plugin_system import PluginManager
+from services.plugin_loader import load_plugins_into_manager
+
 # ── ACP ───────────────────────────────────────────────────────────────────────
 
 def _get_acp_registry():
@@ -100,6 +105,19 @@ def _emit_coordinator_event(app, event_type: str, payload: Dict[str, Any]) -> No
         coordinator.event_bus.emit_sync(event_type, payload)
 
 
+def _dispatch_hook(app, hook_name: str, data: Dict[str, Any]) -> None:
+    """Dispatch a plugin hook to all registered plugin handlers."""
+    pm = getattr(app.state, "plugin_manager", None)
+    if pm is None:
+        return
+    try:
+        ctx = pm.dispatch(hook_name, data)
+        if ctx.is_stopped:
+            logger.debug(f"Hook '{hook_name}' stopped by plugin")
+    except Exception as e:
+        logger.error(f"Plugin hook '{hook_name}' dispatch error: {e}")
+
+
 # ── App Factory ───────────────────────────────────────────────────────────────
 
 def create_app(
@@ -139,6 +157,16 @@ def create_app(
     except Exception as e:
         logger.warning(f"Coordinator initialization skipped: {e}")
         app.state.coordinator = None
+
+    # ── Plugin Manager ───────────────────────────────────────────────────
+    plugin_manager = PluginManager()
+    plugins_dir = PROJECT_ROOT / "plugins"
+    summary = load_plugins_into_manager(plugin_manager, str(plugins_dir))
+    app.state.plugin_manager = plugin_manager
+    logger.info(
+        f"Plugins loaded: {summary['success_count']}/{summary['total']} "
+        f"({summary['loaded']})"
+    )
 
     # ── CORS ────────────────────────────────────────────────────────────────
 
@@ -247,6 +275,9 @@ def create_app(
                 app, "job_created",
                 {"job_id": run_id, "profile": record.profile, "status": record.state.value}
             )
+            _dispatch_hook(app, "job:before_run", {
+                "job_id": run_id, "profile": record.profile, "phase": record.phase
+            })
             app.state.audit.log(
                 category="job", event="job_created", actor="user",
                 target=run_id, metadata={"profile": record.profile}
@@ -287,6 +318,9 @@ def create_app(
             app, "job_created",
             {"job_id": run_id, "profile": profile_name, "status": "pending"}
         )
+        _dispatch_hook(app, "job:before_run", {
+            "job_id": run_id, "profile": profile_name, "phase": record.phase
+        })
         app.state.audit.log(
             category="job", event="job_created", actor="user",
             target=run_id, metadata={"profile": profile_name}
@@ -452,6 +486,61 @@ def create_app(
         """Audit log statistics for a given date."""
         audit = app.state.audit
         return audit.stats(date=date)
+
+    # ── Plugin Management API ───────────────────────────────────────────────
+
+    @app.get("/plugins", tags=["plugins"])
+    async def list_plugins():
+        """List all registered plugins."""
+        pm = app.state.plugin_manager
+        return {"plugins": pm.list_plugins(), "total": len(pm._plugins)}
+
+    @app.get("/plugins/{name}", tags=["plugins"])
+    async def get_plugin(name: str):
+        """Get plugin details."""
+        plugin = app.state.plugin_manager.get_plugin(name)
+        if plugin is None:
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+        return {
+            "name": plugin.meta.name,
+            "version": plugin.meta.version,
+            "description": plugin.meta.description,
+            "hooks": plugin.meta.hooks,
+            "priority": plugin.meta.priority,
+            "initialized": plugin.is_initialized,
+        }
+
+    @app.post("/plugins/{name}/enable", tags=["plugins"])
+    async def enable_plugin(name: str):
+        """Enable a disabled plugin."""
+        pm = app.state.plugin_manager
+        plugin = pm.get_plugin(name)
+        if plugin is None:
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+        if not plugin.is_initialized:
+            plugin.initialize()
+        return {"name": name, "enabled": True}
+
+    @app.post("/plugins/{name}/disable", tags=["plugins"])
+    async def disable_plugin(name: str):
+        """Disable a plugin (stop propagation on all hooks)."""
+        pm = app.state.plugin_manager
+        plugin = pm.get_plugin(name)
+        if plugin is None:
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+        plugin.cleanup()
+        return {"name": name, "enabled": False}
+
+    @app.put("/plugins/{name}/config", tags=["plugins"])
+    async def update_plugin_config(name: str, request: Request):
+        """Update plugin runtime config (stored in memory)."""
+        pm = app.state.plugin_manager
+        plugin = pm.get_plugin(name)
+        if plugin is None:
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+        config = await request.json()
+        plugin._config = config
+        return {"name": name, "config": config}
 
     # ── Coordinator API (Multi-Agent) ─────────────────────────────────────────
 
@@ -656,6 +745,9 @@ def create_app(
             category="acp", event="agent_registered", actor=agent_id,
             target=agent_id, metadata={"name": agent.name, "role": agent.role}
         )
+        _dispatch_hook(app, "agent:registered", {
+            "agent_id": agent_id, "name": agent.name, "role": agent.role
+        })
         return {
             "session_id": session_id,
             "agent_id": agent_id,
@@ -672,6 +764,7 @@ def create_app(
             category="acp", event="agent_unregistered", actor=agent_id,
             target=agent_id
         )
+        _dispatch_hook(app, "agent:unregistered", {"agent_id": agent_id})
         return {"agent_id": agent_id, "unregistered": True}
 
     @app.get("/acp/{agent_id}", tags=["acp"])
@@ -834,6 +927,9 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                     category="job", event="job_completed", actor="system",
                     target=job_id, metadata={"profile": record.profile, "state": updated.state.value}
                 )
+                _dispatch_hook(app, "job:after_completed", {
+                    "job_id": job_id, "profile": record.profile, "state": updated.state.value
+                })
                 break
 
     except asyncio.CancelledError:
@@ -860,6 +956,12 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                     target=job_id,
                     metadata={"retry": record.retry_count, "error": str(exc)}
                 )
+                _dispatch_hook(app, "job:after_retry", {
+                    "job_id": job_id,
+                    "retry_count": record.retry_count,
+                    "max_retries": record.max_retries,
+                    "error": str(exc)
+                })
                 await _publish_event(job_id, {
                     "event": "retry_scheduled",
                     "retry": record.retry_count,
@@ -880,6 +982,9 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                     category="job", event="job_failed", actor="system",
                     target=job_id, metadata={"error": str(exc), "retries": record.retry_count}
                 )
+                _dispatch_hook(app, "job:after_failed", {
+                    "job_id": job_id, "error": str(exc), "retries": record.retry_count
+                })
     finally:
         # Cleanup
         if job_id in app.state._running_jobs:
