@@ -3,7 +3,7 @@ import {
   listJobs, getJob, createJob, resumeJob, abortJob,
   listProfiles, healthCheck, subscribeJob, subscribeCoordinatorEvents,
   listPlugins, enablePlugin, disablePlugin, updatePluginConfig,
-  getAuditLogs, getAuditStats,
+  getAuditLogs, getAuditStats, getStats,
   type Job, type Profile,
 } from './api';
 
@@ -361,6 +361,35 @@ function JobDetail({
 }
 
 // ── Jobs List ─────────────────────────────────────────────────────────────────
+
+
+function StatsCard({ stats, loading }: { stats: Record<string, unknown> | null; loading: boolean }) {
+  if (loading) return <div className="text-gray-500 text-sm py-4">Loading stats…</div>;
+  if (!stats) return null;
+  
+  const fmt = (v: number | undefined) => v?.toLocaleString?.() ?? '-';
+  
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      <div className="bg-gray-900 rounded p-3 border border-gray-800">
+        <div className="text-2xl font-bold text-white">{fmt(stats.total as number)}</div>
+        <div className="text-xs text-gray-500">Total Jobs</div>
+      </div>
+      <div className="bg-gray-900 rounded p-3 border border-gray-800">
+        <div className="text-2xl font-bold text-green-400">{fmt(stats.success_rate as number)}%</div>
+        <div className="text-xs text-gray-500">Success Rate</div>
+      </div>
+      <div className="bg-gray-900 rounded p-3 border border-gray-800">
+        <div className="text-2xl font-bold text-blue-400">{fmt(stats.avg_duration_ms as number)}ms</div>
+        <div className="text-xs text-gray-500">Avg Duration</div>
+      </div>
+      <div className="bg-gray-900 rounded p-3 border border-gray-800">
+        <div className="text-2xl font-bold text-yellow-400">{fmt(stats.throughput_last_hour as number)}</div>
+        <div className="text-xs text-gray-500">Jobs/Hour</div>
+      </div>
+    </div>
+  );
+}
 
 function JobsList({
   jobs,
@@ -748,6 +777,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [gatewayHealth, setGatewayHealth] = useState<{ status: string; version: string } | null>(null);
+  const [gatewayStats, setGatewayStats] = useState<Record<string, unknown> | null>(null);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -756,16 +786,20 @@ export default function App() {
     } catch (e) { setError(String(e)); }
   }, []);
 
+  const loadStats = useCallback(async () => {
+    try { setGatewayStats(await getStats()); } catch { /* optional */ }
+  }, []);
+
   const loadProfiles = useCallback(async () => {
     try { setProfiles(await listProfiles()); } catch { /* optional */ }
   }, []);
 
-  // ── SSE: coordinator events → refresh job list ──
+  // ── SSE: coordinator events → refresh job list + stats ──
   useEffect(() => {
     if (!gatewayHealth) return;
     const unsub = subscribeCoordinatorEvents((event) => {
       const et = event.event_type || event.type;
-      if (et === 'job_created') { loadJobs(); return; }
+      if (et === 'job_created') { loadJobs(); loadStats(); return; }
       if (et === 'job_status_changed' || et === 'job_completed' || et === 'job_failed') {
         const jobId = (event.job_id || event.jobId) as string;
         if (!jobId) return;
@@ -773,21 +807,22 @@ export default function App() {
           setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
           if (selectedJob?.id === updated.id) setSelectedJob(updated);
         }).catch(() => {});
+        loadStats();
       }
     }, { onDisconnect: () => {} });
     return unsub;
-  }, [gatewayHealth, loadJobs, selectedJob?.id]);
+  }, [gatewayHealth, loadJobs, loadStats, selectedJob?.id]);
 
   useEffect(() => {
     const init = async () => {
       setLoading(true);
       const health = await healthCheck().catch(() => null);
       setGatewayHealth(health);
-      await Promise.all([loadJobs(), loadProfiles()]);
+      await Promise.all([loadJobs(), loadProfiles(), loadStats()]);
       setLoading(false);
     };
     init();
-  }, [loadJobs, loadProfiles]);
+  }, [loadJobs, loadProfiles, loadStats]);
 
   const handleJobCreated = (job: Job) => setJobs(prev => [job, ...prev]);
   const handleJobRefresh = (updated: Job) => {
@@ -864,13 +899,16 @@ export default function App() {
           selectedJob ? (
             <JobDetail job={selectedJob} onBack={() => setSelectedJob(null)} onRefresh={handleJobRefresh} />
           ) : (
-            <JobsList
-              jobs={jobs}
-              onSelect={setSelectedJob}
-              onRefresh={loadJobs}
-              filter={jobFilter}
-              setFilter={setJobFilter}
-            />
+            <>
+              <StatsCard stats={gatewayStats} loading={loading} />
+              <JobsList
+                jobs={jobs}
+                onSelect={setSelectedJob}
+                onRefresh={loadJobs}
+                filter={jobFilter}
+                setFilter={setJobFilter}
+              />
+            </>
           )
         )}
         {tab === 'plugins' && <PluginsTab />}

@@ -113,6 +113,22 @@ export async function getStats(): Promise<Record<string, unknown>> {
   return res.json();
 }
 
+export interface StatsBucket {
+  timestamp: string;
+  total: number;
+  completed: number;
+  failed: number;
+  avg_duration_ms: number;
+  retries: number;
+}
+
+export async function getStatsTimeseries(hours = 24): Promise<StatsBucket[]> {
+  const res = await fetch(`${API_BASE}/stats/timeseries?hours=${hours}`);
+  if (!res.ok) throw new Error('Failed to get stats timeseries');
+  const data = await res.json();
+  return data.buckets || [];
+}
+
 // ── Plugins ──────────────────────────────────────────────────────────────────
 
 export async function listPlugins(): Promise<Plugin[]> {
