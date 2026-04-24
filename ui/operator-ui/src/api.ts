@@ -30,6 +30,14 @@ export interface Profile {
   description: string;
 }
 
+export interface Plugin {
+  name: string;
+  enabled: boolean;
+  description: string;
+  hooks: string[];
+  config: Record<string, unknown>;
+}
+
 export interface CreateJobRequest {
   profile: string;
   description?: string;
@@ -102,6 +110,61 @@ export async function healthCheck(): Promise<{ status: string; version: string }
 export async function getStats(): Promise<Record<string, unknown>> {
   const res = await fetch(`${API_BASE}/stats`);
   if (!res.ok) throw new Error('Failed to get stats');
+  return res.json();
+}
+
+// ── Plugins ──────────────────────────────────────────────────────────────────
+
+export async function listPlugins(): Promise<Plugin[]> {
+  const res = await fetch(`${API_BASE}/plugins`);
+  if (!res.ok) throw new Error(`Failed to list plugins: ${res.statusText}`);
+  const data = await res.json();
+  return data.plugins || [];
+}
+
+export async function enablePlugin(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/plugins/${encodeURIComponent(name)}/enable`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to enable plugin: ${res.statusText}`);
+}
+
+export async function disablePlugin(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/plugins/${encodeURIComponent(name)}/disable`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Failed to disable plugin: ${res.statusText}`);
+}
+
+export async function updatePluginConfig(name: string, config: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`${API_BASE}/plugins/${encodeURIComponent(name)}/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  });
+  if (!res.ok) throw new Error(`Failed to update plugin config: ${res.statusText}`);
+}
+
+// ── Audit ─────────────────────────────────────────────────────────────────────
+
+export interface AuditEntry {
+  id: string;
+  timestamp: string;
+  category: string;
+  event: string;
+  actor: string;
+  target: string;
+  metadata: Record<string, unknown>;
+}
+
+export async function getAuditLogs(params?: Record<string, string>): Promise<AuditEntry[]> {
+  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+  const res = await fetch(`${API_BASE}/audit${qs}`);
+  if (!res.ok) throw new Error(`Failed to get audit logs: ${res.statusText}`);
+  const data = await res.json();
+  return data.entries || [];
+}
+
+export async function getAuditStats(): Promise<Record<string, unknown>> {
+  const today = new Date().toISOString().split('T')[0];
+  const res = await fetch(`${API_BASE}/audit/stats?date=${today}`);
+  if (!res.ok) return {};
   return res.json();
 }
 
