@@ -151,16 +151,61 @@ class CheckpointStore:
         return f"run_{ts}"
     
     def summary(self) -> Dict[str, Any]:
-        """返回 CheckpointStore 统计摘要"""
+        """返回 CheckpointStore 统计摘要（含成功率、平均耗时、重试统计）"""
+        from datetime import datetime, timedelta
+        
         all_records = self.list(limit=1000)
         by_state: Dict[str, int] = {}
         by_profile: Dict[str, int] = {}
+        
+        # 可观测性统计
+        total_retries = 0
+        completed_durations = []  # 已完成 job 的执行时间（ms）
+        throughput_last_hour = 0
+        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        
         for r in all_records:
             by_state[r.state.value] = by_state.get(r.state.value, 0) + 1
             by_profile[r.profile] = by_profile.get(r.profile, 0) + 1
+            
+            # 重试统计
+            total_retries += r.retry_count
+            
+            # 执行时间（只算已完成的）
+            if r.state.value == "completed" and r.finished_at and r.created_at:
+                try:
+                    start = datetime.fromisoformat(r.created_at.replace("Z", "+00:00"))
+                    end = datetime.fromisoformat(r.finished_at.replace("Z", "+00:00"))
+                    duration_ms = int((end - start).total_seconds() * 1000)
+                    completed_durations.append(duration_ms)
+                except Exception:
+                    pass
+            
+            # 过去1小时吞吐量
+            if r.finished_at:
+                try:
+                    finished = datetime.fromisoformat(r.finished_at.replace("Z", "+00:00"))
+                    if finished > one_hour_ago:
+                        throughput_last_hour += 1
+                except Exception:
+                    pass
+        
+        # 成功率
+        total = len(all_records)
+        completed = by_state.get("completed", 0)
+        success_rate = (completed / total * 100) if total > 0 else 0.0
+        
+        # 平均执行时间
+        avg_duration_ms = int(sum(completed_durations) / len(completed_durations)) if completed_durations else 0
+        
         return {
-            "total": len(all_records),
+            "total": total,
             "by_state": by_state,
             "by_profile": by_profile,
             "storage_dir": str(self.base_dir),
+            # 可观测性增强
+            "success_rate": round(success_rate, 2),  # 百分比
+            "avg_duration_ms": avg_duration_ms,
+            "total_retries": total_retries,
+            "throughput_last_hour": throughput_last_hour,
         }

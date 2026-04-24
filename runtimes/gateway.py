@@ -394,6 +394,42 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
         return _record_to_api(record, include_state_data=True)
 
+
+    @app.get("/jobs/{job_id}/metrics", tags=["jobs"])
+    async def get_job_metrics(job_id: str):
+        """Get a job's execution metrics and statistics."""
+        from datetime import datetime
+        
+        store = app.state.store
+        record = store.load(job_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+        
+        # Calculate duration if completed
+        duration_ms = None
+        if record.finished_at and record.created_at:
+            try:
+                start = datetime.fromisoformat(record.created_at.replace("Z", "+00:00"))
+                end = datetime.fromisoformat(record.finished_at.replace("Z", "+00:00"))
+                duration_ms = int((end - start).total_seconds() * 1000)
+            except Exception:
+                pass
+        
+        metrics = record.metrics or {}
+        
+        return {
+            "job_id": job_id,
+            "phase": record.phase,
+            "state": record.state.value,
+            "duration_ms": duration_ms,
+            "started_at": record.created_at,
+            "finished_at": record.finished_at,
+            "providers_run": metrics.get("providers_run", 0),
+            "providers_succeeded": metrics.get("providers_succeeded", 0),
+            "retry_count": record.retry_count,
+            "max_retries": record.max_retries,
+            "error": metrics.get("error"),
+        }
     @app.post("/jobs/{job_id}/resume", tags=["jobs"])
     async def resume_job(job_id: str, background_tasks: BackgroundTasks):
         """Resume a failed/pending job."""
