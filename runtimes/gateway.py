@@ -49,6 +49,10 @@ logger = logging.getLogger("gateway")
 from providers.base import RunState, TaskPhase, TaskOutput
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
 from runtimes.workspace import RunWorkspace
+from runtimes.profile_validator import (
+    validate_profile, discover_profiles, get_effective_defaults,
+    merge_config, DEFAULT_KEYS, SERVICE_DEFAULTS,
+)
 
 # ── Audit Logger ───────────────────────────────────────────────────────────────
 
@@ -299,7 +303,11 @@ def create_app(
             )
 
         with open(profile_path, encoding="utf-8") as f:
-            config = json.load(f)
+            profile_data = json.load(f)
+
+        # Apply runtime config overrides (highest priority)
+        api_overrides = body.get("config_overrides", {})
+        effective_config = merge_config(profile_data, api_overrides)
 
         run_id = store.new_id()
         record = CheckpointRecord(
@@ -308,7 +316,7 @@ def create_app(
             profile=profile_name,
             phase=TaskPhase.CURRICULUM.value,
             state=RunState.PENDING,
-            config=config,
+            config=effective_config,
             state_data={},
             metrics={},
             description=body.get("description", f"Job from profile '{profile_name}'"),
@@ -447,6 +455,59 @@ def create_app(
                 "description": data.get("description", ""),
             })
         return {"profiles": profiles}
+
+    @app.get("/profiles/schema", tags=["profiles"])
+    async def profile_schema():
+        """Return the profile JSON schema documentation."""
+        return {
+            "required": ["name", "version"],
+            "optional": {"description": "string", "providers": "list", "defaults": "dict", "runtime": "dict", "metadata": "dict"},
+            "known_defaults": {k: t.__name__ if not isinstance(t, tuple) else "union" for k, t in DEFAULT_KEYS.items()},
+            "service_defaults": SERVICE_DEFAULTS,
+        }
+
+    @app.get("/profiles/{name}", tags=["profiles"])
+    async def get_profile(name: str):
+        """Get a profile with its effective defaults resolved."""
+        profile_path = PROJECT_ROOT / "profiles" / f"{name}.json"
+        if not profile_path.exists():
+            raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+        with open(profile_path, encoding="utf-8") as f:
+            data = json.load(f)
+        errors = validate_profile(data)
+        effective = get_effective_defaults(data)
+        return {
+            "name": name,
+            "file": profile_path.name,
+            "data": data,
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "effective_defaults": effective,
+            "service_defaults": {
+                "environment": SERVICE_DEFAULTS.get("environment", {}),
+                "learner": SERVICE_DEFAULTS.get("learner", {}),
+            },
+        }
+
+    @app.get("/profiles/{name}/validate", tags=["profiles"])
+    async def validate_profile_endpoint(name: str):
+        """Validate a profile and return errors if any."""
+        profile_path = PROJECT_ROOT / "profiles" / f"{name}.json"
+        if not profile_path.exists():
+            raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+        from runtimes.profile_validator import validate_profile_file
+        is_valid, errors = validate_profile_file(profile_path)
+        return {"name": name, "valid": is_valid, "errors": errors}
+
+    @app.get("/profiles/schema", tags=["profiles"])
+    async def profile_schema():
+        """Return the profile JSON schema documentation."""
+        return {
+            "required": ["name", "version"],
+            "optional": {"description": "string", "providers": "list", "defaults": "dict", "runtime": "dict", "metadata": "dict"},
+            "known_defaults": {k: t.__name__ if not isinstance(t, tuple) else "union" for k, t in DEFAULT_KEYS.items()},
+            "service_defaults": SERVICE_DEFAULTS,
+        }
 
     # ── Store Summary ────────────────────────────────────────────────────────
 
@@ -1018,6 +1079,7 @@ def _record_to_api(record: CheckpointRecord, include_state_data: bool = False) -
         "workspace_dir": record.workspace_dir,
         "retry_count": record.retry_count,
         "max_retries": record.max_retries,
+        "config": record.config,
     }
     if include_state_data:
         result["config"] = record.config
