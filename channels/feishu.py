@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+from fastapi import Request, Response
 
 logger = logging.getLogger("feishu")
 
@@ -339,7 +340,6 @@ def register_feishu_webhook(app, adapter: FeishuAdapter, path: str = "/webhooks/
         adapter: FeishuAdapter 实例
         path: Webhook 路径
     """
-    from fastapi import Request, Response
     
     @app.post(path, tags=["webhooks"])
     async def feishu_webhook(request: Request):

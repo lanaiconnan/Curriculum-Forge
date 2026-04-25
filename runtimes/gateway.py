@@ -670,7 +670,7 @@ def create_app(
         from collections import defaultdict
 
         store = app.state.store
-        records = store.list_all()
+        records = store.list(limit=10000)
 
         # Calculate time range
         now = datetime.now(timezone.utc)
@@ -1010,6 +1010,327 @@ def create_app(
         }
 
     # ════════════════════════════════════════════════════════════════════════
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Batch Jobs - 批量任务创建
+    # ════════════════════════════════════════════════════════════════════════
+
+    @app.post("/jobs/batch", tags=["jobs"], status_code=201)
+    async def create_batch_jobs(request: Request):
+        """
+        Create multiple jobs in one request.
+
+        Body:
+            jobs (list): Array of job specs, each with profile/config or proposal
+        Returns:
+            jobs (list): Created job records with ids
+            total (int): Number of jobs created
+            failed (list): Indices of failed creations (empty if all succeeded)
+        """
+        body = await request.json()
+        jobs_spec = body.get("jobs", [])
+        if not jobs_spec:
+            return {"jobs": [], "total": 0, "failed": []}
+
+        store = app.state.store
+        created = []
+        failed = []
+
+        async def _create_one(idx, spec):
+            try:
+                run_id = store.new_id()
+                if "proposal" in spec:
+                    proposal = spec["proposal"]
+                    config_override = spec.get("config", {})
+                    merged_config = merge_config({}, config_override)
+                    record = CheckpointRecord(
+                        id=run_id,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        status=RunState.PENDING.value,
+                        phase=TaskPhase.INIT.value,
+                        proposal=proposal,
+                        config=merged_config,
+                    )
+                else:
+                    profile_name = spec.get("profile", "rl_controller")
+                    config_override = spec.get("config", {})
+                    profile_path = PROJECT_ROOT / "profiles" / f"{profile_name}.json"
+                    if not profile_path.exists():
+                        return idx, None, f"Profile not found: {profile_name}"
+                    profile = _load_profile(profile_path)
+                    merged_config = merge_config(profile.get("config", {}), config_override)
+                    record = CheckpointRecord(
+                        id=run_id,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        status=RunState.PENDING.value,
+                        phase=TaskPhase.INIT.value,
+                        profile=profile_name,
+                        config=merged_config,
+                        proposal={"goal": profile.get("goal", "unspecified")},
+                    )
+
+                store.save(record)
+                if hasattr(app.state, "coordinator") and app.state.coordinator:
+                    _register_job_with_coordinator(app.state.coordinator, run_id)
+                _emit_coordinator_event("job.created", {"job_id": run_id})
+                _dispatch_hook("job.created", {"job_id": run_id, "batch_index": idx})
+                app.state.audit.log("job.create", {"job_id": run_id, "batch_index": idx})
+                return idx, _record_to_api(record), None
+            except Exception as e:
+                return idx, None, str(e)
+
+        results = await asyncio.gather(*[_create_one(i, spec) for i, spec in enumerate(jobs_spec)])
+
+        for idx, record, error in results:
+            if error:
+                failed.append({"index": idx, "error": error})
+            else:
+                created.append(record)
+
+        return {"jobs": created, "total": len(created), "failed": failed}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Scheduled Jobs - 定时任务
+    # ════════════════════════════════════════════════════════════════════════
+
+    # 内存存储（生产环境应使用数据库）
+    _scheduled_jobs = {}  # id -> {spec, next_run, interval, enabled}
+    _scheduler_task = None
+
+    async def _scheduler_loop():
+        """后台轮询定时任务"""
+        while True:
+            await asyncio.sleep(30)  # 30秒检查一次
+            now = datetime.now(timezone.utc)
+            for job_id, sched in list(_scheduled_jobs.items()):
+                if not sched.get("enabled", True):
+                    continue
+                next_run = sched.get("next_run")
+                if next_run and datetime.fromisoformat(next_run) <= now:
+                    # 触发任务
+                    try:
+                        spec = sched["spec"]
+                        async def _create_scheduled_job():
+                            store = app.state.store
+                            run_id = store.new_id()
+                            if "proposal" in spec:
+                                record = CheckpointRecord(
+                                    id=run_id,
+                                    created_at=datetime.now(timezone.utc).isoformat(),
+                                    status=RunState.PENDING.value,
+                                    phase=TaskPhase.INIT.value,
+                                    proposal=spec["proposal"],
+                                    config=merge_config({}, spec.get("config", {})),
+                                )
+                            else:
+                                profile_name = spec.get("profile", "rl_controller")
+                                profile_path = PROJECT_ROOT / "profiles" / f"{profile_name}.json"
+                                profile = _load_profile(profile_path) if profile_path.exists() else {}
+                                record = CheckpointRecord(
+                                    id=run_id,
+                                    created_at=datetime.now(timezone.utc).isoformat(),
+                                    status=RunState.PENDING.value,
+                                    phase=TaskPhase.INIT.value,
+                                    profile=profile_name,
+                                    config=merge_config(profile.get("config", {}), spec.get("config", {})),
+                                    proposal={"goal": profile.get("goal", "unspecified")},
+                                )
+                            store.save(record)
+                            if hasattr(app.state, "coordinator"):
+                                _register_job_with_coordinator(app.state.coordinator, run_id)
+                            _emit_coordinator_event("job.created", {"job_id": run_id, "scheduled": True})
+                            app.state.audit.log("job.scheduled", {"job_id": run_id, "schedule_id": job_id})
+                        await _create_scheduled_job()
+                    except Exception as e:
+                        print(f"[Scheduler] Failed to create job for schedule {job_id}: {e}")
+
+                    # 更新下次运行时间
+                    interval = sched.get("interval", 3600)
+                    sched["next_run"] = (datetime.now(timezone.utc) + timedelta(seconds=interval)).isoformat()
+
+    def _start_scheduler():
+        global _scheduler_task
+        if _scheduler_task is None:
+            _scheduler_task = asyncio.create_task(_scheduler_loop())
+
+    @app.post("/schedules", tags=["schedules"], status_code=201)
+    async def create_schedule(request: Request):
+        """
+        Create a scheduled job.
+
+        Body:
+            spec (dict): Job spec (profile/config or proposal)
+            interval (int): Interval in seconds (default 3600)
+            enabled (bool): Whether to enable (default True)
+        Returns:
+            id, next_run, interval, enabled
+        """
+        body = await request.json()
+        spec = body.get("spec", {})
+        interval = body.get("interval", 3600)
+        enabled = body.get("enabled", True)
+
+        schedule_id = f"sched_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+        next_run = (datetime.now(timezone.utc) + timedelta(seconds=interval)).isoformat()
+
+        _scheduled_jobs[schedule_id] = {
+            "spec": spec,
+            "interval": interval,
+            "enabled": enabled,
+            "next_run": next_run,
+        }
+
+        _start_scheduler()
+
+        app.state.audit.log("schedule.create", {"schedule_id": schedule_id, "interval": interval})
+        return {"id": schedule_id, "next_run": next_run, "interval": interval, "enabled": enabled}
+
+    @app.get("/schedules", tags=["schedules"])
+    async def list_schedules():
+        """List all scheduled jobs."""
+        return {
+            "schedules": [
+                {"id": k, **v} for k, v in _scheduled_jobs.items()
+            ],
+            "total": len(_scheduled_jobs)
+        }
+
+    @app.get("/schedules/{schedule_id}", tags=["schedules"])
+    async def get_schedule(schedule_id: str):
+        """Get a specific scheduled job."""
+        if schedule_id not in _scheduled_jobs:
+            return {"error": "Schedule not found"}, 404
+        return {"id": schedule_id, **_scheduled_jobs[schedule_id]}
+
+    @app.delete("/schedules/{schedule_id}", tags=["schedules"])
+    async def delete_schedule(schedule_id: str):
+        """Delete a scheduled job."""
+        if schedule_id in _scheduled_jobs:
+            del _scheduled_jobs[schedule_id]
+            app.state.audit.log("schedule.delete", {"schedule_id": schedule_id})
+            return {"deleted": True}
+        return {"error": "Schedule not found"}, 404
+
+    @app.patch("/schedules/{schedule_id}", tags=["schedules"])
+    async def update_schedule(schedule_id: str, request: Request):
+        """Update a scheduled job."""
+        if schedule_id not in _scheduled_jobs:
+            return {"error": "Schedule not found"}, 404
+        body = await request.json()
+        sched = _scheduled_jobs[schedule_id]
+        if "enabled" in body:
+            sched["enabled"] = body["enabled"]
+        if "interval" in body:
+            sched["interval"] = body["interval"]
+            sched["next_run"] = (datetime.now(timezone.utc) + timedelta(seconds=body["interval"])).isoformat()
+        if "spec" in body:
+            sched["spec"] = body["spec"]
+        app.state.audit.log("schedule.update", {"schedule_id": schedule_id})
+        return {"id": schedule_id, **sched}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Job Templates - 任务模板
+    # ════════════════════════════════════════════════════════════════════════
+
+    TEMPLATES_DIR = PROJECT_ROOT / "templates"
+
+    def _ensure_templates_dir():
+        TEMPLATES_DIR.mkdir(exist_ok=True)
+
+    @app.get("/templates", tags=["templates"])
+    async def list_templates():
+        """List all job templates."""
+        _ensure_templates_dir()
+        templates = []
+        for f in TEMPLATES_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                templates.append({
+                    "name": f.stem,
+                    "description": data.get("description", ""),
+                    "profile": data.get("profile"),
+                    "created": data.get("created"),
+                })
+            except Exception:
+                pass
+        return {"templates": templates, "total": len(templates)}
+
+    @app.get("/templates/{name}", tags=["templates"])
+    async def get_template(name: str):
+        """Get a specific job template."""
+        _ensure_templates_dir()
+        path = TEMPLATES_DIR / f"{name}.json"
+        if not path.exists():
+            return {"error": "Template not found"}, 404
+        return json.loads(path.read_text())
+
+    @app.post("/templates", tags=["templates"], status_code=201)
+    async def create_template(request: Request):
+        """
+        Create a new job template.
+
+        Body:
+            name (str): Template name
+            description (str, optional): Description
+            profile (str): Default profile
+            config (dict, optional): Default config
+        """
+        body = await request.json()
+        name = body.get("name")
+        if not name:
+            return {"error": "name required"}, 400
+
+        _ensure_templates_dir()
+        path = TEMPLATES_DIR / f"{name}.json"
+        if path.exists():
+            return {"error": "Template already exists"}, 409
+
+        template = {
+            "name": name,
+            "description": body.get("description", ""),
+            "profile": body.get("profile", "rl_controller"),
+            "config": body.get("config", {}),
+            "created": datetime.now(timezone.utc).isoformat(),
+        }
+
+        path.write_text(json.dumps(template, indent=2))
+        app.state.audit.log("template.create", {"template_name": name})
+        return template
+
+    @app.put("/templates/{name}", tags=["templates"])
+    async def update_template(name: str, request: Request):
+        """Update a job template."""
+        _ensure_templates_dir()
+        path = TEMPLATES_DIR / f"{name}.json"
+        if not path.exists():
+            return {"error": "Template not found"}, 404
+
+        existing = json.loads(path.read_text())
+        body = await request.json()
+
+        if "description" in body:
+            existing["description"] = body["description"]
+        if "profile" in body:
+            existing["profile"] = body["profile"]
+        if "config" in body:
+            existing["config"] = body["config"]
+
+        path.write_text(json.dumps(existing, indent=2))
+        app.state.audit.log("template.update", {"template_name": name})
+        return existing
+
+    @app.delete("/templates/{name}", tags=["templates"])
+    async def delete_template(name: str):
+        """Delete a job template."""
+        _ensure_templates_dir()
+        path = TEMPLATES_DIR / f"{name}.json"
+        if not path.exists():
+            return {"error": "Template not found"}, 404
+
+        path.unlink()
+        app.state.audit.log("template.delete", {"template_name": name})
+        return {"deleted": True}
+
     # ACP - Agent Control Protocol
     # ════════════════════════════════════════════════════════════════════════
 
