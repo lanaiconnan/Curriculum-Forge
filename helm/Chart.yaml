@@ -1,0 +1,42 @@
+apiVersion: v2
+name: curriculum-forge
+description: Curriculum-Forge — Multi-agent reinforcement learning curriculum runtime
+
+# Chart type
+type: application
+
+# Chart version (SemVer 2)
+version: 1.0.0
+
+# App version being deployed
+appVersion: "1.0.0"
+
+# Kubernetes version requirements
+kubeVersion: ">=1.20.0"
+
+# Maintainers
+maintainers:
+  - name: Curriculum-Forge Team
+    email: team@curriculum-forge.example.com
+
+# Keywords for search
+keywords:
+  - reinforcement-learning
+  - multi-agent
+  - curriculum-learning
+  - gateway
+  - runtime
+
+# Home page
+home: https://github.com/curriculum-forge/dual-agent-tool-rl
+
+# Sources
+sources:
+  - https://github.com/curriculum-forge/dual-agent-tool-rl
+
+# Dependencies (optional)
+# dependencies:
+#   - name: redis
+#     version: "17.x.x"
+#     repository: "https://charts.bitnami.com/bitnami"
+#     condition: redis.enabled

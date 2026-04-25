@@ -1,0 +1,238 @@
+{{- $gateway := .Values.gateway -}}
+{{- $ui := .Values.ui -}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curriculum-forge.fullname" . }}-gateway
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+    component: gateway
+spec:
+  replicas: {{ $gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "curriculum-forge.selectorLabels" . | nindent 6 }}
+      component: gateway
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/profiles: {{ .Values.profiles | toJson | sha256sum }}
+      labels:
+        {{- include "curriculum-forge.selectorLabels" . | nindent 8 }}
+        component: gateway
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "curriculum-forge.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gateway
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          image: "{{ .Values.global.imageRegistry }}{{ $gateway.image.repository }}:{{ $gateway.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $gateway.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $gateway.service.port }}
+              protocol: TCP
+          env:
+            # App config
+            - name: LOG_LEVEL
+              value: {{ $gateway.env.LOG_LEVEL | quote }}
+            - name: CF_TOPIC
+              value: {{ $gateway.env.TOPIC | quote }}
+            - name: CF_MAX_ITERATIONS
+              value: {{ $gateway.env.MAX_ITERATIONS | quote }}
+            - name: CF_PASS_THRESHOLD
+              value: {{ $gateway.env.PASS_THRESHOLD | quote }}
+            - name: CF_DIFFICULTY
+              value: {{ $gateway.env.DIFFICULTY | quote }}
+            - name: CF_GOAL
+              value: {{ $gateway.env.GOAL | quote }}
+            # Feishu
+            - name: FEISHU_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: feishu-app-id
+                  optional: true
+            - name: FEISHU_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: feishu-app-secret
+                  optional: true
+            - name: FEISHU_ENCRYPT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: feishu-encrypt-key
+                  optional: true
+            - name: FEISHU_VERIFICATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: feishu-verification-token
+                  optional: true
+            # WeChat
+            - name: WEIXIN_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: weixin-app-id
+                  optional: true
+            - name: WEIXIN_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: weixin-app-secret
+                  optional: true
+            - name: WEIXIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: weixin-token
+                  optional: true
+            - name: WEIXIN_ENCODING_AES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "curriculum-forge.fullname" . }}-credentials
+                  key: weixin-encoding-aes-key
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: {{ $gateway.livenessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ $gateway.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $gateway.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ $gateway.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ $gateway.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $gateway.readinessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ $gateway.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $gateway.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ $gateway.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ $gateway.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml $gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: checkpoints
+              mountPath: /app/checkpoints
+            - name: templates
+              mountPath: /app/templates
+            - name: workspace
+              mountPath: /app/workspace
+            - name: profiles
+              mountPath: /app/profiles
+              readOnly: true
+      volumes:
+        - name: checkpoints
+          {{- if .Values.persistence.checkpoints.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.checkpoints.existingClaim | default (printf "%s-checkpoints" (include "curriculum-forge.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: templates
+          {{- if .Values.persistence.templates.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.templates.existingClaim | default (printf "%s-templates" (include "curriculum-forge.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: workspace
+          {{- if .Values.persistence.workspace.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.workspace.existingClaim | default (printf "%s-workspace" (include "curriculum-forge.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: profiles
+          configMap:
+            name: {{ include "curriculum-forge.fullname" . }}-profiles
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "curriculum-forge.fullname" . }}-ui
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+    component: ui
+spec:
+  replicas: {{ $ui.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "curriculum-forge.selectorLabels" . | nindent 6 }}
+      component: ui
+  template:
+    metadata:
+      labels:
+        {{- include "curriculum-forge.selectorLabels" . | nindent 8 }}
+        component: ui
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "curriculum-forge.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: ui
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          image: "{{ .Values.global.imageRegistry }}{{ $ui.image.repository }}:{{ $ui.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $ui.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $ui.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ $ui.livenessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ $ui.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $ui.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ $ui.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ $ui.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ $ui.readinessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ $ui.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $ui.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ $ui.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ $ui.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml $ui.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

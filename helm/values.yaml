@@ -1,0 +1,259 @@
+# Default values for curriculum-forge.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# Gateway (backend) configuration
+gateway:
+  replicaCount: 2
+  
+  image:
+    repository: curriculum-forge-gateway
+    pullPolicy: IfNotPresent
+    tag: "latest"
+  
+  service:
+    type: ClusterIP
+    port: 8765
+    nodePort: ""
+  
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Health checks
+  livenessProbe:
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    path: /stats
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  
+  # Environment variables (app config)
+  env:
+    LOG_LEVEL: INFO
+    TOPIC: "rl_curriculum"
+    MAX_ITERATIONS: "100"
+    PASS_THRESHOLD: "0.7"
+    DIFFICULTY: "medium"
+    GOAL: "Learn to solve RL tasks"
+  
+  # Feishu credentials (set via --set or secrets)
+  feishu:
+    appId: ""
+    appSecret: ""
+    encryptKey: ""
+    verificationToken: ""
+  
+  # WeChat credentials
+  weixin:
+    appId: ""
+    appSecret: ""
+    token: ""
+    encodingAesKey: ""
+
+# UI (frontend) configuration
+ui:
+  replicaCount: 2
+  
+  image:
+    repository: curriculum-forge-ui
+    pullPolicy: IfNotPresent
+    tag: "latest"
+  
+  service:
+    type: ClusterIP
+    port: 80
+    nodePort: ""
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  livenessProbe:
+    path: /
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    path: /
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400s"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400s"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  
+  hosts:
+    - host: forge.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: ui
+        - path: /api
+          pathType: Prefix
+          service: gateway
+        - path: /coordinator/events
+          pathType: Exact
+          service: gateway
+        - path: /jobs
+          pathType: Prefix
+          service: gateway
+        - path: /acp
+          pathType: Prefix
+          service: gateway
+        - path: /stats
+          pathType: Prefix
+          service: gateway
+        - path: /audit
+          pathType: Prefix
+          service: gateway
+        - path: /profiles
+          pathType: Prefix
+          service: gateway
+        - path: /templates
+          pathType: Prefix
+          service: gateway
+        - path: /schedules
+          pathType: Prefix
+          service: gateway
+        - path: /plugins
+          pathType: Prefix
+          service: gateway
+  
+  tls:
+    - secretName: curriculum-forge-tls
+      hosts:
+        - forge.example.com
+
+# Persistence configuration
+persistence:
+  checkpoints:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    # storageClass: ""
+    existingClaim: ""
+  
+  templates:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    # storageClass: ""
+    existingClaim: ""
+  
+  workspace:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    # storageClass: ""
+    existingClaim: ""
+
+# Profiles to deploy (JSON data)
+profiles:
+  rl_curriculum:
+    topic: "rl_curriculum"
+    max_iterations: 100
+    pass_threshold: 0.7
+    difficulty: "medium"
+    goal: "Learn to solve RL tasks"
+    reward_weight: 0.6
+    curriculum_weight: 0.4
+    curriculum_steps:
+      - difficulty: "easy"
+        threshold: 0.8
+      - difficulty: "medium"
+        threshold: 0.7
+      - difficulty: "hard"
+        threshold: 0.6
+  
+  simple_math:
+    topic: "math_basics"
+    max_iterations: 50
+    pass_threshold: 0.9
+    difficulty: "easy"
+    goal: "Master basic arithmetic"
+    operations: ["add", "subtract", "multiply"]
+  
+  creative_writing:
+    topic: "creative_writing"
+    max_iterations: 30
+    pass_threshold: 0.6
+    difficulty: "medium"
+    goal: "Write creative content"
+    style: "free-form"
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Container security context
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Autoscaling (optional)
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  # targetMemoryUtilizationPercentage: 80

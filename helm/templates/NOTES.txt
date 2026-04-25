@@ -1,0 +1,71 @@
+Thank you for installing Curriculum-Forge!
+
+Your release is named: {{ .Release.Name }}
+
+================================================================================
+ACCESSING YOUR APPLICATION
+================================================================================
+
+{{- if .Values.ingress.enabled }}
+
+The application is accessible via Ingress:
+
+  UI:  https://{{ (index .Values.ingress.hosts 0).host }}
+  API: https://{{ (index .Values.ingress.hosts 0).host }}/api
+
+{{- else if contains "NodePort" .Values.gateway.service.type }}
+
+Get the application URLs by running these commands:
+
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "curriculum-forge.fullname" . }}-gateway-nodeport)
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  
+  Gateway: http://$NODE_IP:$NODE_PORT
+
+{{- else }}
+
+Get the application URL by running these commands:
+
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "curriculum-forge.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8765:$CONTAINER_PORT
+  
+  Gateway: http://localhost:8765
+
+{{- end }}
+
+================================================================================
+USEFUL COMMANDS
+================================================================================
+
+# Check deployment status
+kubectl get all -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
+
+# View gateway logs
+kubectl logs -l component=gateway -n {{ .Release.Namespace }} -f
+
+# View UI logs
+kubectl logs -l component=ui -n {{ .Release.Namespace }} -f
+
+# Port-forward to Gateway (if no Ingress)
+kubectl port-forward svc/{{ include "curriculum-forge.fullname" . }}-gateway 8765:8765 -n {{ .Release.Namespace }}
+
+# Port-forward to UI (if no Ingress)
+kubectl port-forward svc/{{ include "curriculum-forge.fullname" . }}-ui 8080:80 -n {{ .Release.Namespace }}
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Configure credentials (Feishu/WeChat) via Secrets:
+   kubectl create secret generic {{ include "curriculum-forge.fullname" . }}-credentials \
+     --from-literal=feishu-app-id=YOUR_APP_ID \
+     --from-literal=feishu-app-secret=YOUR_APP_SECRET \
+     -n {{ .Release.Namespace }}
+
+2. Set up DNS for your Ingress host: {{ (index .Values.ingress.hosts 0).host }}
+
+3. Enable TLS with cert-manager (uncomment annotation in values.yaml)
+
+For more information, see: https://github.com/curriculum-forge/dual-agent-tool-rl

@@ -1,0 +1,53 @@
+{{- if .Values.persistence.checkpoints.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.checkpoints.existingClaim | default (printf "%s-checkpoints" (include "curriculum-forge.fullname" .)) }}
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.checkpoints.accessMode }}
+  {{- if .Values.persistence.checkpoints.storageClass }}
+  storageClassName: {{ .Values.persistence.checkpoints.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.checkpoints.size }}
+---
+{{- end }}
+{{- if .Values.persistence.templates.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.templates.existingClaim | default (printf "%s-templates" (include "curriculum-forge.fullname" .)) }}
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.templates.accessMode }}
+  {{- if .Values.persistence.templates.storageClass }}
+  storageClassName: {{ .Values.persistence.templates.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.templates.size }}
+---
+{{- end }}
+{{- if .Values.persistence.workspace.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.workspace.existingClaim | default (printf "%s-workspace" (include "curriculum-forge.fullname" .)) }}
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.workspace.accessMode }}
+  {{- if .Values.persistence.workspace.storageClass }}
+  storageClassName: {{ .Values.persistence.workspace.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.workspace.size }}
+{{- end }}

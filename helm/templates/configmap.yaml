@@ -1,0 +1,48 @@
+{{- $profiles := .Values.profiles -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "curriculum-forge.fullname" . }}-profiles
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+data:
+  {{- range $name, $profile := $profiles }}
+  {{ $name }}.json: |
+    {{- $profile | toJson | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "curriculum-forge.fullname" . }}-credentials
+  labels:
+    {{- include "curriculum-forge.labels" . | nindent 4 }}
+type: Opaque
+data:
+  # Feishu credentials (base64 encoded)
+  {{- if .Values.gateway.feishu.appId }}
+  feishu-app-id: {{ .Values.gateway.feishu.appId | b64enc | quote }}
+  {{- end }}
+  {{- if .Values.gateway.feishu.appSecret }}
+  feishu-app-secret: {{ .Values.gateway.feishu.appSecret | b64enc | quote }}
+  {{- end }}
+  {{- if .Values.gateway.feishu.encryptKey }}
+  feishu-encrypt-key: {{ .Values.gateway.feishu.encryptKey | b64enc | quote }}
+  {{- end }}
+  {{- if .Values.gateway.feishu.verificationToken }}
+  feishu-verification-token: {{ .Values.gateway.feishu.verificationToken | b64enc | quote }}
+  {{- end }}
+  # WeChat credentials (base64 encoded)
+  {{- if .Values.gateway.weixin.appId }}
+  weixin-app-id: {{ .Values.gateway.weixin.appId | b64enc | quote }}
+  {{- end }}
+  {{- if .Values.gateway.weixin.appSecret }}
+  weixin-app-secret: {{ .Values.gateway.weixin.appSecret | b64enc | quote }}
+  {{- end }}
+  {{- if .Values.gateway.weixin.token }}
+  weixin-token: {{ .Values.gateway.weixin.token | b64enc | quote }}
+  {{- end }}
+  {{- if .Values.gateway.weixin.encodingAesKey }}
+  weixin-encoding-aes-key: {{ .Values.gateway.weixin.encodingAesKey | b64enc | quote }}
+  {{- end }}
