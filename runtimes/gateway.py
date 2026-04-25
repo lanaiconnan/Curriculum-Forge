@@ -51,6 +51,7 @@ from providers.base import RunState, TaskPhase, TaskOutput
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
 from runtimes.workspace import RunWorkspace
 from runtimes.cache import CachedCheckpointStore
+from runtimes.stats_aggregator import StatsAggregator
 from runtimes.profile_validator import (
     validate_profile, discover_profiles, get_effective_defaults,
     merge_config, DEFAULT_KEYS, SERVICE_DEFAULTS,
@@ -227,6 +228,17 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── Stats Aggregator (Background Task) ───────────────────────────────────
+    app.state.stats_aggregator = StatsAggregator(app.state.store)
+
+    @app.on_event("startup")
+    async def startup_stats_aggregator():
+        await app.state.stats_aggregator.start()
+
+    @app.on_event("shutdown")
+    async def shutdown_stats_aggregator():
+        await app.state.stats_aggregator.stop()
 
     # ── SSE Helpers ─────────────────────────────────────────────────────────
 
@@ -671,10 +683,18 @@ def create_app(
         Time-series statistics for trend visualization.
 
         Returns hourly buckets of job statistics for the last N hours.
+        Uses pre-aggregated data if available (updated every 5 minutes).
         """
         from datetime import datetime, timedelta, timezone
         from collections import defaultdict
 
+        # 优先使用预聚合数据
+        aggregator = app.state.stats_aggregator
+        cached = aggregator.get_stats(hours)
+        if cached:
+            return cached.to_dict()
+
+        # 缓存未命中，回退到实时计算
         store = app.state.store
         records = store.list(limit=10000)
 
