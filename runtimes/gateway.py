@@ -532,7 +532,8 @@ def create_app(
         # Update state
         record.state = RunState.RUNNING
         record.updated_at = datetime.now(timezone.utc).isoformat()
-        store.save(record)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: store.save(record))
 
         # Run in background
         task = asyncio.create_task(_run_job_background(job_id, app))
@@ -563,7 +564,8 @@ def create_app(
 
         record.state = RunState.FAILED
         record.finished_at = datetime.now(timezone.utc).isoformat()
-        store.save(record)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: store.save(record))
 
         await _publish_event(job_id, {"event": "abort", "job_id": job_id})
         _emit_coordinator_event(
@@ -1184,7 +1186,8 @@ def create_app(
                                     config=merge_config(profile.get("config", {}), spec.get("config", {})),
                                     proposal={"goal": profile.get("goal", "unspecified")},
                                 )
-                            store.save(record)
+                            loop = asyncio.get_event_loop()
+                            await loop.run_in_executor(None, lambda: store.save(record))
                             if hasattr(app.state, "coordinator"):
                                 _register_job_with_coordinator(app.state.coordinator, run_id)
                             _emit_coordinator_event("job.created", {"job_id": run_id, "scheduled": True})
@@ -1609,7 +1612,8 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                 logger.info(f"[{job_id}] Scheduling retry {record.retry_count}/{record.max_retries}")
                 record.state = RunState.PENDING
                 record.finished_at = None
-                store.save(record)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, lambda: store.save(record))
                 app.state.audit.log(
                     category="job", event="job_retry_scheduled", actor="system",
                     target=job_id,
@@ -1634,7 +1638,8 @@ async def _run_job_background(job_id: str, app: FastAPI) -> None:
                 # Exhausted retries - mark permanently failed
                 record.state = RunState.FAILED
                 record.finished_at = datetime.now(timezone.utc).isoformat()
-                store.save(record)
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, lambda: store.save(record))
                 await _publish_event(job_id, {"event": "error", "error": str(exc)})
                 _emit_coordinator_event(app, "job_failed", {"job_id": job_id, "error": str(exc)})
                 app.state.audit.log(
