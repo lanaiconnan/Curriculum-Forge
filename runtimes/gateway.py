@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import sse_starlette
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.requests import Request
 from starlette.responses import Response
@@ -211,6 +212,10 @@ def create_app(
         f"Plugins loaded: {summary['success_count']}/{summary['total']} "
         f"({summary['loaded']})"
     )
+
+    # ── GZip Compression ─────────────────────────────────────────────────────
+
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     # ── CORS ────────────────────────────────────────────────────────────────
 
