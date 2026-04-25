@@ -61,6 +61,10 @@ from runtimes.profile_validator import (
 
 from audit import AuditLogger
 
+# ── Prometheus Metrics ────────────────────────────────────────────────────────
+
+from runtimes import metrics as prom_metrics
+
 # ── Plugin System ─────────────────────────────────────────────────────────────
 
 from services.plugin_system import PluginManager
@@ -219,6 +223,61 @@ def create_app(
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+    # ── Prometheus Metrics Middleware ──────────────────────────────────────────
+
+    @app.middleware("http")
+    async def prometheus_middleware(request: Request, call_next):
+        import time
+        start_time = time.time()
+        
+        # Extract endpoint pattern (remove path params)
+        path = request.url.path
+        # Normalize dynamic paths like /jobs/{id} -> /jobs/:id
+        parts = path.strip("/").split("/")
+        normalized_parts = []
+        for i, part in enumerate(parts):
+            if part and part[0].isdigit() or (i > 0 and parts[i-1] in ['jobs', 'acp', 'schedules', 'templates']):
+                # Likely an ID, replace with :id
+                if len(part) > 8 or '-' in part:
+                    normalized_parts.append(':id')
+                else:
+                    normalized_parts.append(part)
+            else:
+                normalized_parts.append(part)
+        endpoint = '/' + '/'.join(normalized_parts) if normalized_parts else '/'
+        
+        # Track in-progress
+        prom_metrics.HTTP_REQUESTS_IN_PROGRESS.labels(
+            method=request.method, endpoint=endpoint
+        ).inc()
+        
+        try:
+            response = await call_next(request)
+            duration = time.time() - start_time
+            
+            # Track request
+            prom_metrics.track_request(
+                method=request.method,
+                endpoint=endpoint,
+                status=response.status_code,
+                duration=duration
+            )
+            
+            return response
+        except Exception as e:
+            duration = time.time() - start_time
+            prom_metrics.track_request(
+                method=request.method,
+                endpoint=endpoint,
+                status=500,
+                duration=duration
+            )
+            raise
+        finally:
+            prom_metrics.HTTP_REQUESTS_IN_PROGRESS.labels(
+                method=request.method, endpoint=endpoint
+            ).dec()
+
     # ── CORS ────────────────────────────────────────────────────────────────
 
     app.add_middleware(
@@ -235,6 +294,15 @@ def create_app(
     @app.on_event("startup")
     async def startup_stats_aggregator():
         await app.state.stats_aggregator.start()
+
+    @app.on_event("startup")
+    async def startup_metrics():
+        # Set system info for Prometheus
+        prom_metrics.SYSTEM_INFO.info({
+            'version': '0.1.0',
+            'service': 'curriculum-forge-gateway',
+            'python': sys.version.split()[0],
+        })
 
     @app.on_event("shutdown")
     async def shutdown_stats_aggregator():
@@ -276,6 +344,15 @@ def create_app(
             "version": "0.1.0",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    @app.get("/metrics", tags=["system"])
+    async def metrics():
+        """Prometheus metrics endpoint."""
+        from fastapi.responses import Response
+        return Response(
+            content=prom_metrics.get_metrics(),
+            media_type=prom_metrics.get_content_type()
+        )
 
     # ── Jobs API ─────────────────────────────────────────────────────────────
 

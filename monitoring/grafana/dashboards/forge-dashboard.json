@@ -1,0 +1,261 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "panels": [],
+      "title": "HTTP Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}},
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "title": "Requests/s (1m)",
+      "type": "stat",
+      "targets": [{"expr": "sum(rate(http_requests_total[1m]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area"},
+      "title": "p95 Latency",
+      "type": "stat",
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "id": 4,
+      "options": {"colorMode": "value"},
+      "title": "Error Rate",
+      "type": "stat",
+      "targets": [{"expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "id": 5,
+      "options": {"colorMode": "value"},
+      "title": "In-Progress",
+      "type": "stat",
+      "targets": [{"expr": "sum(http_requests_in_progress)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 5},
+      "id": 6,
+      "title": "Request Rate by Endpoint",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(http_requests_total[5m])) by (endpoint)", "legendFormat": "{{endpoint}}", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 5},
+      "id": 7,
+      "title": "Latency by Endpoint (p95)",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, endpoint))", "legendFormat": "{{endpoint}}", "refId": "A"}]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 11},
+      "id": 10,
+      "title": "Job Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 12},
+      "id": 11,
+      "options": {"colorMode": "value"},
+      "title": "Active Jobs",
+      "type": "stat",
+      "targets": [{"expr": "jobs_active", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 12},
+      "id": 12,
+      "options": {"colorMode": "value"},
+      "title": "Jobs Created (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(jobs_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 12},
+      "id": 13,
+      "options": {"colorMode": "value"},
+      "title": "Jobs Succeeded (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(jobs_completed_total{state=\"SUCCESS\"}[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 12},
+      "id": 14,
+      "options": {"colorMode": "value"},
+      "title": "Jobs Failed (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(jobs_completed_total{state=\"FAILED\"}[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 12},
+      "id": 15,
+      "options": {"colorMode": "value"},
+      "title": "Total Iterations",
+      "type": "stat",
+      "targets": [{"expr": "sum(job_iterations_total)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+      "id": 16,
+      "title": "Jobs by Profile",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(jobs_total[5m])) by (profile)", "legendFormat": "{{profile}}", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+      "id": 17,
+      "title": "Job Duration Distribution",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.50, sum(rate(job_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B"}]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "id": 20,
+      "title": "ACP Agent Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 23},
+      "id": 21,
+      "options": {"colorMode": "value"},
+      "title": "Registered Agents",
+      "type": "stat",
+      "targets": [{"expr": "acp_agents_registered", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 23},
+      "id": 22,
+      "options": {"colorMode": "value"},
+      "title": "Tasks Claimed (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(acp_tasks_claimed_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 23},
+      "id": 23,
+      "options": {"colorMode": "value"},
+      "title": "Tasks Completed (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(acp_tasks_completed_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 27},
+      "id": 24,
+      "title": "Agent Heartbeats",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(acp_agent_heartbeats_total[5m])) by (agent_id)", "legendFormat": "{{agent_id}}", "refId": "A"}]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 33},
+      "id": 30,
+      "title": "SSE & Cache Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 34},
+      "id": 31,
+      "options": {"colorMode": "value"},
+      "title": "Active SSE Connections",
+      "type": "stat",
+      "targets": [{"expr": "sum(sse_connections_active)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 34},
+      "id": 32,
+      "options": {"colorMode": "value"},
+      "title": "SSE Events Sent (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(sse_events_sent_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 34},
+      "id": 33,
+      "options": {"colorMode": "value"},
+      "title": "Cache Hit Rate",
+      "type": "stat",
+      "targets": [{"expr": "sum(rate(cache_hits_total[5m])) / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 34},
+      "id": 34,
+      "options": {"colorMode": "value"},
+      "title": "Cache Evictions (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(cache_evictions_total[1h]))", "refId": "A"}]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["curriculum-forge", "prometheus"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": true, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Curriculum-Forge Dashboard",
+  "uid": "curriculum-forge",
+  "version": 1,
+  "weekStart": ""
+}
