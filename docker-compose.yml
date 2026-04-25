@@ -1,0 +1,72 @@
+# Curriculum-Forge Docker Compose
+# For local development and testing
+
+services:
+  # Backend Gateway
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: curriculum-forge-gateway
+    ports:
+      - "8765:8765"
+    environment:
+      # Gateway configuration
+      - CF_HOST=0.0.0.0
+      - CF_PORT=8765
+      # Profile defaults (can be overridden)
+      - CF_TOPIC=rl_curriculum
+      - CF_MAX_ITERATIONS=100
+      - CF_PASS_THRESHOLD=0.7
+      # Optional: Channel credentials (uncomment to enable)
+      # - FEISHU_APP_ID=your_app_id
+      # - FEISHU_APP_SECRET=your_app_secret
+      # - FEISHU_ENCRYPT_KEY=your_encrypt_key
+      # - FEISHU_VERIFICATION_TOKEN=your_verification_token
+      # - WEIXIN_APP_ID=your_app_id
+      # - WEIXIN_APP_SECRET=your_app_secret
+      # - WEIXIN_TOKEN=your_token
+      # - WEIXIN_ENCODING_AES_KEY=your_aes_key
+    volumes:
+      # Persist checkpoints and templates
+      - ./checkpoints:/app/checkpoints
+      - ./templates:/app/templates
+      # Workspace for job data
+      - forge-workspace:/app/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - forge-net
+
+  # Frontend Operator UI
+  ui:
+    build:
+      context: ./ui/operator-ui
+      dockerfile: Dockerfile
+    container_name: curriculum-forge-ui
+    ports:
+      - "8080:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - forge-net
+
+networks:
+  forge-net:
+    driver: bridge
+
+volumes:
+  forge-workspace:
+    driver: local
