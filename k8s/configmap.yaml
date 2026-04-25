@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: curriculum-forge-config
+  labels:
+    app: curriculum-forge
+data:
+  # Default profile configuration
+  topic: "rl_curriculum"
+  max_iterations: "100"
+  pass_threshold: "0.7"
+  difficulty: "medium"
+  goal: "Learn to solve RL tasks with curriculum learning"
+  
+  # Logging configuration
+  log_level: "INFO"
+  
+  # Feature flags
+  enable_audit_logging: "true"
+  enable_plugin_system: "true"
+  enable_coordinator: "true"
+  
+  # Performance tuning
+  checkpoint_interval: "60"
+  max_concurrent_jobs: "10"
+---
+# Profiles ConfigMap - JSON task configurations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: curriculum-forge-profiles
+  labels:
+    app: curriculum-forge
+data:
+  rl_controller.json: |
+    {
+      "name": "rl_controller",
+      "description": "RL Controller with progressive curriculum",
+      "max_iterations": 100,
+      "pass_threshold": 0.7,
+      "difficulty": "medium",
+      "goal": "Learn to solve RL tasks with curriculum learning"
+    }
+  pure_harness.json: |
+    {
+      "name": "pure_harness",
+      "description": "Pure harness benchmark mode",
+      "max_iterations": 50,
+      "pass_threshold": 0.8,
+      "difficulty": "easy",
+      "goal": "Run benchmarks without curriculum"
+    }
+  progressive_disclosure.json: |
+    {
+      "name": "progressive_disclosure",
+      "description": "Progressive task disclosure",
+      "max_iterations": 150,
+      "pass_threshold": 0.75,
+      "difficulty": "hard",
+      "goal": "Progressive learning with increasing complexity"
+    }

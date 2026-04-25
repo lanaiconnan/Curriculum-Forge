@@ -1,0 +1,165 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curriculum-forge-gateway
+  labels:
+    app: curriculum-forge
+    component: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: curriculum-forge
+      component: gateway
+  template:
+    metadata:
+      labels:
+        app: curriculum-forge
+        component: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: curriculum-forge-gateway:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8765
+          name: http
+          protocol: TCP
+        env:
+        # Server configuration
+        - name: CF_HOST
+          value: "0.0.0.0"
+        - name: CF_PORT
+          value: "8765"
+        # Profile defaults (can be overridden by ConfigMap)
+        - name: CF_TOPIC
+          valueFrom:
+            configMapKeyRef:
+              name: curriculum-forge-config
+              key: topic
+              optional: true
+        - name: CF_MAX_ITERATIONS
+          valueFrom:
+            configMapKeyRef:
+              name: curriculum-forge-config
+              key: max_iterations
+              optional: true
+        - name: CF_PASS_THRESHOLD
+          valueFrom:
+            configMapKeyRef:
+              name: curriculum-forge-config
+              key: pass_threshold
+              optional: true
+        - name: CF_DIFFICULTY
+          valueFrom:
+            configMapKeyRef:
+              name: curriculum-forge-config
+              key: difficulty
+              optional: true
+        - name: CF_GOAL
+          valueFrom:
+            configMapKeyRef:
+              name: curriculum-forge-config
+              key: goal
+              optional: true
+        # Channel credentials (from Secrets in production)
+        # - name: FEISHU_APP_ID
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: channel-credentials
+        #       key: feishu-app-id
+        # - name: FEISHU_APP_SECRET
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: channel-credentials
+        #       key: feishu-app-secret
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8765
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8765
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: checkpoints
+          mountPath: /app/checkpoints
+        - name: templates
+          mountPath: /app/templates
+        - name: workspace
+          mountPath: /app/workspace
+      volumes:
+      - name: checkpoints
+        persistentVolumeClaim:
+          claimName: curriculum-forge-checkpoints
+      - name: templates
+        persistentVolumeClaim:
+          claimName: curriculum-forge-templates
+      - name: workspace
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curriculum-forge-ui
+  labels:
+    app: curriculum-forge
+    component: ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: curriculum-forge
+      component: ui
+  template:
+    metadata:
+      labels:
+        app: curriculum-forge
+        component: ui
+    spec:
+      containers:
+      - name: ui
+        image: curriculum-forge-ui:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
