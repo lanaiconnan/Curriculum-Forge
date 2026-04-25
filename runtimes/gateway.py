@@ -72,7 +72,11 @@ from services.plugin_loader import load_plugins_into_manager
 
 # ── Authentication ─────────────────────────────────────────────────────────
 
-from auth import APIKeyAuth, APIKeyStore, APIKeyRecord, APIKeyMiddleware
+from auth import (
+    APIKeyAuth, APIKeyStore, APIKeyRecord, APIKeyMiddleware,
+    JWTAuth, JWTConfig, TokenPair, UserPayload, create_jwt_auth_from_env,
+    UserStore, UserRecord, create_default_admin_user,
+)
 
 # ── ACP ───────────────────────────────────────────────────────────────────────
 
@@ -237,6 +241,19 @@ def create_app(
             rate_limit=10000
         )
         logger.warning(f"Created default admin API Key: {default_key.api_key}")
+
+    # ── JWT Auth & User Store ──────────────────────────────────────────────
+    app.state.jwt_auth = create_jwt_auth_from_env()
+    app.state.user_store = UserStore(
+        storage_path=str(auth_data_dir / "users.json"),
+        auto_save=True
+    )
+    # 自动创建默认 admin 用户（仅首次）
+    admin_user = create_default_admin_user(app.state.user_store)
+    if admin_user:
+        logger.warning(f"Created default admin user: {admin_user.username}")
+        logger.warning("Default password: admin123 — CHANGE IN PRODUCTION!")
+
     # ── GZip Compression ─────────────────────────────────────────────────────
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -949,6 +966,357 @@ def create_app(
             "scopes": record.scopes,
             "rate_limit": record.rate_limit,
         }
+
+    # ── JWT Authentication Endpoints ──────────────────────────────────────
+
+    @app.post("/auth/login", tags=["auth"])
+    async def login(
+        request: Request,
+        username: str,
+        password: str,
+    ):
+        """
+        User login with username/password.
+        
+        Returns JWT token pair (access + refresh).
+        """
+        user_store = request.app.state.user_store
+        jwt_auth = request.app.state.jwt_auth
+        
+        user = user_store.authenticate(username, password)
+        if not user:
+            # 记录失败登录
+            if hasattr(request.app.state, "audit"):
+                request.app.state.audit.log(
+                    action="user.login_failed",
+                    actor=username,
+                    metadata={"reason": "invalid_credentials"}
+                )
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid username or password"
+            )
+        
+        # 创建 token pair
+        tokens = jwt_auth.create_token_pair(
+            user_id=user.user_id,
+            username=user.username,
+            roles=user.roles,
+            email=user.email
+        )
+        
+        # 记录成功登录
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.login",
+                actor=user.username,
+                target=user.user_id,
+                metadata={"method": "password"}
+            )
+        
+        return {
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "token_type": tokens.token_type,
+            "expires_in": tokens.expires_in,
+            "user": {
+                "user_id": user.user_id,
+                "username": user.username,
+                "email": user.email,
+                "full_name": user.full_name,
+                "roles": user.roles,
+            }
+        }
+
+    @app.post("/auth/logout", tags=["auth"])
+    async def logout(request: Request):
+        """
+        Logout user by invalidating their tokens.
+        
+        Requires Authorization: Bearer <token> header.
+        """
+        auth_header = request.headers.get("Authorization", "")
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        
+        if not token:
+            raise HTTPException(status_code=401, detail="Token required")
+        
+        jwt_auth = request.app.state.jwt_auth
+        jwt_auth.invalidate_token(token)
+        
+        # 记录登出
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.logout",
+                actor=getattr(request.state, "username", "unknown")
+            )
+        
+        return {"logged_out": True}
+
+    @app.post("/auth/refresh", tags=["auth"])
+    async def refresh_token(request: Request):
+        """
+        Refresh access token using refresh token.
+        
+        Request body: {"refresh_token": "..."}
+        """
+        from pydantic import BaseModel
+        
+        class RefreshRequest(BaseModel):
+            refresh_token: str
+        
+        body = await request.json()
+        refresh_token = body.get("refresh_token")
+        if not refresh_token:
+            raise HTTPException(status_code=400, detail="refresh_token required")
+        
+        jwt_auth = request.app.state.jwt_auth
+        tokens = jwt_auth.refresh_access_token(refresh_token)
+        
+        if not tokens:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or expired refresh token"
+            )
+        
+        return {
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "token_type": tokens.token_type,
+            "expires_in": tokens.expires_in,
+        }
+
+    @app.get("/auth/me", tags=["auth"])
+    async def get_current_user(request: Request):
+        """
+        Get current user information from JWT token.
+        
+        Requires Authorization: Bearer <token> header.
+        """
+        auth_header = request.headers.get("Authorization", "")
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        
+        if not token:
+            raise HTTPException(status_code=401, detail="Token required")
+        
+        jwt_auth = request.app.state.jwt_auth
+        payload = jwt_auth.verify_token(token)
+        
+        if not payload:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        
+        # 获取完整用户信息
+        user_store = request.app.state.user_store
+        user = user_store.get_user(payload.user_id)
+        
+        return {
+            "user_id": payload.user_id,
+            "username": payload.username,
+            "email": user.email if user else payload.email,
+            "full_name": user.full_name if user else None,
+            "roles": payload.roles,
+            "token_expires_in": jwt_auth.get_token_remaining_time(token),
+        }
+
+    # ── User Management Endpoints (Admin) ───────────────────────────────────
+
+    @app.post("/users", tags=["users"], status_code=201)
+    async def create_user(
+        request: Request,
+        username: str,
+        password: str,
+        email: Optional[str] = None,
+        full_name: Optional[str] = None,
+        roles: Optional[List[str]] = Query(None),
+    ):
+        """Create a new user (admin only)."""
+        user_store = request.app.state.user_store
+        
+        try:
+            user = user_store.create_user(
+                username=username,
+                password=password,
+                email=email,
+                full_name=full_name,
+                roles=roles or ["user"]
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.created",
+                actor=getattr(request.state, "username", "system"),
+                target=user.user_id,
+                metadata={"username": username, "roles": roles or ["user"]}
+            )
+        
+        return {
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": user.roles,
+            "created_at": user.created_at,
+        }
+
+    @app.get("/users", tags=["users"])
+    async def list_users(
+        request: Request,
+        enabled_only: bool = Query(False),
+        role: Optional[str] = Query(None),
+        limit: int = Query(100, le=1000),
+    ):
+        """List users (admin only)."""
+        user_store = request.app.state.user_store
+        users = user_store.list_users(
+            enabled_only=enabled_only,
+            role=role,
+            limit=limit
+        )
+        
+        return {
+            "users": [
+                {
+                    "user_id": u.user_id,
+                    "username": u.username,
+                    "email": u.email,
+                    "full_name": u.full_name,
+                    "roles": u.roles,
+                    "enabled": u.enabled,
+                    "last_login_at": u.last_login_at,
+                    "created_at": u.created_at,
+                }
+                for u in users
+            ],
+            "total": len(users),
+        }
+
+    @app.get("/users/{user_id}", tags=["users"])
+    async def get_user(request: Request, user_id: str):
+        """Get user by ID (admin only)."""
+        user_store = request.app.state.user_store
+        user = user_store.get_user(user_id)
+        
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        
+        return {
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": user.roles,
+            "enabled": user.enabled,
+            "last_login_at": user.last_login_at,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+        }
+
+    @app.patch("/users/{user_id}", tags=["users"])
+    async def update_user(
+        request: Request,
+        user_id: str,
+        email: Optional[str] = Query(None),
+        full_name: Optional[str] = Query(None),
+        roles: Optional[List[str]] = Query(None),
+        enabled: Optional[bool] = Query(None),
+    ):
+        """Update user properties (admin only)."""
+        user_store = request.app.state.user_store
+        user = user_store.update_user(
+            user_id=user_id,
+            email=email,
+            full_name=full_name,
+            roles=roles,
+            enabled=enabled
+        )
+        
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.updated",
+                actor=getattr(request.state, "username", "system"),
+                target=user_id,
+                metadata={"changes": {"email": email, "full_name": full_name, "roles": roles, "enabled": enabled}}
+            )
+        
+        return {
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": user.roles,
+            "enabled": user.enabled,
+        }
+
+    @app.delete("/users/{user_id}", tags=["users"])
+    async def delete_user(request: Request, user_id: str):
+        """Delete user (admin only)."""
+        user_store = request.app.state.user_store
+        
+        if not user_store.delete_user(user_id):
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.deleted",
+                actor=getattr(request.state, "username", "system"),
+                target=user_id,
+            )
+        
+        return {"deleted": True, "user_id": user_id}
+
+    @app.post("/users/{user_id}/change-password", tags=["users"])
+    async def change_user_password(
+        request: Request,
+        user_id: str,
+        new_password: str,
+    ):
+        """Change user password (admin or self)."""
+        user_store = request.app.state.user_store
+        
+        if not user_store.change_password(user_id, new_password):
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.password_changed",
+                actor=getattr(request.state, "username", "system"),
+                target=user_id,
+            )
+        
+        return {"password_changed": True, "user_id": user_id}
+
+    @app.post("/users/{user_id}/unlock", tags=["users"])
+    async def unlock_user(request: Request, user_id: str):
+        """Unlock locked user account (admin only)."""
+        user_store = request.app.state.user_store
+        
+        if not user_store.unlock_user(user_id):
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="user.unlocked",
+                actor=getattr(request.state, "username", "system"),
+                target=user_id,
+            )
+        
+        return {"unlocked": True, "user_id": user_id}
+
+    # ── System Stats ────────────────────────────────────────────────────────
 
     @app.get("/stats", tags=["system"])
     async def stats():
