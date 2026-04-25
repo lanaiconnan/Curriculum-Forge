@@ -70,6 +70,10 @@ from runtimes import metrics as prom_metrics
 from services.plugin_system import PluginManager
 from services.plugin_loader import load_plugins_into_manager
 
+# ── Authentication ─────────────────────────────────────────────────────────
+
+from auth import APIKeyAuth, APIKeyStore, APIKeyRecord, APIKeyMiddleware
+
 # ── ACP ───────────────────────────────────────────────────────────────────────
 
 def _get_acp_registry():
@@ -219,6 +223,20 @@ def create_app(
         f"({summary['loaded']})"
     )
 
+
+    # ── API Key Store ─────────────────────────────────────────────────────
+    auth_data_dir = PROJECT_ROOT / "data"
+    auth_data_dir.mkdir(parents=True, exist_ok=True)
+    app.state.api_key_store = APIKeyStore(persist_file=str(auth_data_dir / "api_keys.json"))
+    # 自动创建默认 admin key（仅首次）
+    if app.state.api_key_store.count_keys() == 0:
+        default_key = app.state.api_key_store.create_key(
+            client_id="admin",
+            name="Default Admin Key",
+            scopes=["read", "write", "admin"],
+            rate_limit=10000
+        )
+        logger.warning(f"Created default admin API Key: {default_key.api_key}")
     # ── GZip Compression ─────────────────────────────────────────────────────
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -278,6 +296,20 @@ def create_app(
                 method=request.method, endpoint=endpoint
             ).dec()
 
+
+    # ── API Key Authentication Middleware ─────────────────────────────────────
+    # 注意：必须在 CORS 之后添加，否则预检请求会被拦截
+    # 当前版本：禁用认证（开发模式），通过环境变量启用
+    if os.environ.get("CF_ENABLE_AUTH", "").lower() in ("1", "true", "yes"):
+        app.add_middleware(
+            APIKeyMiddleware,
+            store=app.state.api_key_store,
+            public_paths={"/health", "/metrics", "/docs", "/openapi.json", "/redoc"},
+            public_prefixes={"/static/", "/assets/"},
+        )
+        logger.info("API Key authentication enabled")
+    else:
+        logger.warning("API Key authentication disabled (development mode)")
     # ── CORS ────────────────────────────────────────────────────────────────
 
     app.add_middleware(
@@ -750,6 +782,173 @@ def create_app(
         is_valid, errors = validate_profile_file(profile_path)
         return {"name": name, "valid": is_valid, "errors": errors}
 
+
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Authentication Endpoints
+    # ════════════════════════════════════════════════════════════════════════
+
+    @app.post("/auth/keys", tags=["auth"], status_code=201)
+    async def create_api_key(
+        request: Request,
+        client_id: str,
+        name: str,
+        scopes: Optional[List[str]] = Query(None),
+        rate_limit: int = Query(1000, description="Requests per hour"),
+        expires_in_hours: Optional[int] = Query(None, description="Expiration time in hours"),
+    ):
+        """Create a new API Key."""
+        store = request.app.state.api_key_store
+        expires_at = None
+        if expires_in_hours:
+            import time
+            expires_at = time.time() + (expires_in_hours * 3600)
+        record = store.create_key(
+            client_id=client_id,
+            name=name,
+            scopes=scopes or ["read"],
+            rate_limit=rate_limit,
+            expires_at=expires_at,
+        )
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="api_key.created",
+                actor=getattr(request.state, "client_id", "system"),
+                target=record.key_id,
+                metadata={"client_id": client_id, "name": name, "scopes": scopes or ["read"]}
+            )
+        return {
+            "key_id": record.key_id,
+            "api_key": record.api_key,
+            "client_id": record.client_id,
+            "name": record.name,
+            "scopes": record.scopes,
+            "expires_at": record.expires_at,
+            "rate_limit": record.rate_limit,
+            "created_at": record.created_at,
+        }
+
+
+    @app.get("/auth/keys", tags=["auth"])
+    async def list_api_keys(
+        request: Request,
+        client_id: Optional[str] = Query(None),
+    ):
+        """List all API Keys (without revealing the actual key values)."""
+        store = request.app.state.api_key_store
+        keys = store.list_keys(client_id=client_id, enabled_only=False)
+        return {
+            "keys": [
+                {
+                    "key_id": k.key_id,
+                    "client_id": k.client_id,
+                    "name": k.name,
+                    "scopes": k.scopes,
+                    "enabled": k.enabled,
+                    "expires_at": k.expires_at,
+                    "last_used_at": k.last_used_at,
+                    "rate_limit": k.rate_limit,
+                    "created_at": k.created_at,
+                }
+                for k in keys
+            ],
+            "total": len(keys),
+        }
+
+
+    @app.get("/auth/keys/{key_id}", tags=["auth"])
+    async def get_api_key(request: Request, key_id: str):
+        """Get a single API Key by ID."""
+        store = request.app.state.api_key_store
+        record = store.get_by_id(key_id)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"API Key {key_id} not found")
+        return {
+            "key_id": record.key_id,
+            "client_id": record.client_id,
+            "name": record.name,
+            "scopes": record.scopes,
+            "enabled": record.enabled,
+            "expires_at": record.expires_at,
+            "last_used_at": record.last_used_at,
+            "rate_limit": record.rate_limit,
+            "created_at": record.created_at,
+        }
+
+
+    @app.delete("/auth/keys/{key_id}", tags=["auth"])
+    async def delete_api_key(request: Request, key_id: str):
+        """Delete an API Key."""
+        store = request.app.state.api_key_store
+        if not store.delete_key(key_id):
+            raise HTTPException(status_code=404, detail=f"API Key {key_id} not found")
+        # 记录审计日志
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                action="api_key.deleted",
+                actor=getattr(request.state, "client_id", "system"),
+                target=key_id,
+            )
+        return {"deleted": True, "key_id": key_id}
+
+
+    @app.patch("/auth/keys/{key_id}", tags=["auth"])
+    async def update_api_key(
+        request: Request,
+        key_id: str,
+        name: Optional[str] = Query(None),
+        scopes: Optional[List[str]] = Query(None),
+        enabled: Optional[bool] = Query(None),
+        rate_limit: Optional[int] = Query(None),
+    ):
+        """Update API Key properties."""
+        store = request.app.state.api_key_store
+        updates = {}
+        if name is not None:
+            updates["name"] = name
+        if scopes is not None:
+            updates["scopes"] = scopes
+        if enabled is not None:
+            updates["enabled"] = enabled
+        if rate_limit is not None:
+            updates["rate_limit"] = rate_limit
+        if not updates:
+            raise HTTPException(status_code=400, detail="No updates provided")
+        record = store.update_key(key_id, **updates)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"API Key {key_id} not found")
+        return {
+            "key_id": record.key_id,
+            "name": record.name,
+            "scopes": record.scopes,
+            "enabled": record.enabled,
+            "rate_limit": record.rate_limit,
+        }
+
+
+    @app.post("/auth/verify", tags=["auth"])
+    async def verify_api_key(request: Request):
+        """Verify an API Key. Returns key info if valid."""
+        # 从请求头提取 API Key
+        api_key = request.headers.get("X-API-Key")
+        if not api_key:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                api_key = auth_header[7:]
+        if not api_key:
+            raise HTTPException(status_code=401, detail="API Key required")
+        store = request.app.state.api_key_store
+        is_valid, record = store.verify_key(api_key)
+        if not is_valid:
+            raise HTTPException(status_code=401, detail="Invalid or expired API Key")
+        return {
+            "valid": True,
+            "key_id": record.key_id,
+            "client_id": record.client_id,
+            "scopes": record.scopes,
+            "rate_limit": record.rate_limit,
+        }
 
     @app.get("/stats", tags=["system"])
     async def stats():
