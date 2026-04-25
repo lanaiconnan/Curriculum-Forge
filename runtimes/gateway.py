@@ -50,6 +50,7 @@ logger = logging.getLogger("gateway")
 from providers.base import RunState, TaskPhase, TaskOutput
 from runtimes.checkpoint_store import CheckpointStore, CheckpointRecord
 from runtimes.workspace import RunWorkspace
+from runtimes.cache import CachedCheckpointStore
 from runtimes.profile_validator import (
     validate_profile, discover_profiles, get_effective_defaults,
     merge_config, DEFAULT_KEYS, SERVICE_DEFAULTS,
@@ -179,7 +180,7 @@ def create_app(
 
     # ── State ────────────────────────────────────────────────────────────────
 
-    app.state.store = checkpoint_store or CheckpointStore()
+    app.state.store = CachedCheckpointStore(checkpoint_store or CheckpointStore())
     app.state.ui_dir = ui_dir or (PROJECT_ROOT / "ui" / "operator-ui" / "dist")
     app.state._running_jobs: Dict[str, asyncio.Task] = {}
 
@@ -749,6 +750,25 @@ def create_app(
             })
 
         return {"buckets": result, "hours": hours}
+
+    @app.get("/cache/stats", tags=["system"])
+    async def cache_stats():
+        """Cache statistics (if using CachedCheckpointStore)."""
+        store = app.state.store
+        if hasattr(store, "cache_stats"):
+            return store.cache_stats()
+        else:
+            return {"cached": False}
+
+    @app.post("/cache/clear", tags=["system"])
+    async def cache_clear():
+        """Clear all caches (if using CachedCheckpointStore)."""
+        store = app.state.store
+        if hasattr(store, "clear_cache"):
+            store.clear_cache()
+            return {"cleared": True}
+        else:
+            return {"cleared": False}
 
     # ── Audit API ──────────────────────────────────────────────────────────────
 
