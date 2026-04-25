@@ -384,12 +384,14 @@ def create_app(
             metrics={},
             description=body.get("description", f"Job from profile '{profile_name}'"),
         )
-        store.save(record)
+        # 使用线程池执行阻塞 I/O
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: store.save(record))
         # Register with Coordinator (bridges Gateway→Coordinator gap)
         workflow_id = _register_job_with_coordinator(app, record, profile_name)
         if workflow_id:
             record.workflow_id = workflow_id
-            store.save(record)
+            await loop.run_in_executor(None, lambda: store.save(record))
         _emit_coordinator_event(
             app, "job_created",
             {"job_id": run_id, "profile": profile_name, "status": "pending", "workflow_id": workflow_id}
@@ -1114,7 +1116,9 @@ def create_app(
                         proposal={"goal": profile.get("goal", "unspecified")},
                     )
 
-                store.save(record)
+                # 使用线程池执行阻塞 I/O（Python 3.7 兼容）
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, lambda: store.save(record))
                 if hasattr(app.state, "coordinator") and app.state.coordinator:
                     _register_job_with_coordinator(app.state.coordinator, run_id)
                 _emit_coordinator_event("job.created", {"job_id": run_id})
