@@ -76,6 +76,7 @@ from auth import (
     APIKeyAuth, APIKeyStore, APIKeyRecord, APIKeyMiddleware,
     JWTAuth, JWTConfig, TokenPair, UserPayload, create_jwt_auth_from_env,
     UserStore, UserRecord, create_default_admin_user,
+    RoleStore, get_role_store, DEFAULT_ROUTE_PERMISSIONS,
 )
 
 # ── ACP ───────────────────────────────────────────────────────────────────────
@@ -253,6 +254,9 @@ def create_app(
     if admin_user:
         logger.warning(f"Created default admin user: {admin_user.username}")
         logger.warning("Default password: admin123 — CHANGE IN PRODUCTION!")
+
+    # ── Role Store (RBAC) ─────────────────────────────────────────────────
+    app.state.role_store = get_role_store()
 
     # ── GZip Compression ─────────────────────────────────────────────────────
 
@@ -967,6 +971,86 @@ def create_app(
             "rate_limit": record.rate_limit,
         }
 
+    # ── RBAC Permission Dependencies ──────────────────────────────────────
+
+    from fastapi import Depends
+    from fastapi.security import SecurityScopes
+    from typing import List
+
+    async def get_current_user_roles(
+        request: Request,
+    ) -> List[str]:
+        """
+        从 request.state 获取当前用户角色列表。
+        支持 API Key (scopes) 和 JWT (roles) 两种认证方式。
+        """
+        # API Key 认证
+        if hasattr(request.state, "scopes") and request.state.scopes:
+            # API Key 用 scopes 做权限判断，转换为角色列表（兼容模式）
+            scopes = request.state.scopes
+            if "admin" in scopes or "*" in scopes or "*.*" in str(scopes):
+                return ["admin"]
+            # scopes 格式如 read/write/admin，映射到对应角色
+            roles = []
+            if "read" in scopes:
+                roles.append("viewer")
+            if "write" in scopes or "admin" in scopes:
+                roles.append("operator")
+            if "admin" in scopes:
+                roles.append("admin")
+            return list(set(roles)) if roles else ["viewer"]
+
+        # JWT 认证
+        if hasattr(request.state, "jwt_payload") and request.state.jwt_payload:
+            return request.state.jwt_payload.roles or []
+
+        return []
+
+    async def require_permissions(permissions: List[str]):
+        """
+        权限检查依赖工厂。
+        用法: async def handler(roles=Depends(require_permissions(["jobs.write"])))
+        """
+        async def check(request: Request):
+            role_store = request.app.state.role_store
+            user_roles = await get_current_user_roles(request)
+
+            for perm in permissions:
+                if role_store.check_permission(user_roles, perm):
+                    return  # 有至少一个权限即可
+
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "forbidden",
+                    "message": f"Insufficient permissions. Required one of: {permissions}",
+                    "required": permissions,
+                    "user_roles": user_roles,
+                }
+            )
+        return check
+
+    def require_any_permission(*permissions):
+        """
+        路由级别权限保护装饰器（FastAPI Depends）。
+        用法: async def handler(permission=Depends(require_any_permission("jobs.read", "jobs.write")))
+        """
+        async def dependency(request: Request):
+            role_store = request.app.state.role_store
+            user_roles = await get_current_user_roles(request)
+            for perm in permissions:
+                if role_store.check_permission(user_roles, perm):
+                    return perm
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "forbidden",
+                    "message": f"Permission denied. Required one of: {list(permissions)}",
+                    "required": list(permissions),
+                }
+            )
+        return dependency
+
     # ── JWT Authentication Endpoints ──────────────────────────────────────
 
     @app.post("/auth/login", tags=["auth"])
@@ -1121,6 +1205,131 @@ def create_app(
             "roles": payload.roles,
             "token_expires_in": jwt_auth.get_token_remaining_time(token),
         }
+
+    # ── Role & Permission Management Endpoints (Admin) ────────────────────────
+
+    @app.get("/roles", tags=["roles"])
+    async def list_roles(request: Request):
+        """List all roles"""
+        role_store = request.app.state.role_store
+        roles = role_store.list_roles()
+        return {
+            "roles": [
+                {
+                    "name": r.name,
+                    "display_name": r.display_name,
+                    "description": r.description,
+                    "permissions": r.permissions,
+                    "is_system": r.is_system,
+                }
+                for r in roles
+            ]
+        }
+
+    @app.get("/roles/{name}", tags=["roles"])
+    async def get_role(request: Request, name: str):
+        """Get a specific role"""
+        role_store = request.app.state.role_store
+        role = role_store.get_role(name)
+        if not role:
+            raise HTTPException(status_code=404, detail=f"Role not found: {name}")
+        return {
+            "name": role.name,
+            "display_name": role.display_name,
+            "description": role.description,
+            "permissions": role.permissions,
+            "is_system": role.is_system,
+        }
+
+    @app.post("/roles", tags=["roles"], status_code=201)
+    async def create_role(request: Request):
+        """Create a custom role"""
+        body = await request.json()
+        role_store = request.app.state.role_store
+        try:
+            from auth.rbac import Role
+            role = Role(
+                name=body["name"],
+                display_name=body.get("display_name", body["name"]),
+                description=body.get("description", ""),
+                permissions=body.get("permissions", []),
+                is_system=False,
+            )
+            created = role_store.create_role(role)
+            return {
+                "name": created.name,
+                "display_name": created.display_name,
+                "description": created.description,
+                "permissions": created.permissions,
+                "is_system": created.is_system,
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    @app.put("/roles/{name}", tags=["roles"])
+    async def update_role(request: Request, name: str):
+        """Update a role"""
+        body = await request.json()
+        role_store = request.app.state.role_store
+        try:
+            role = role_store.update_role(name, body)
+            return {
+                "name": role.name,
+                "display_name": role.display_name,
+                "description": role.description,
+                "permissions": role.permissions,
+                "is_system": role.is_system,
+            }
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
+
+    @app.delete("/roles/{name}", tags=["roles"])
+    async def delete_role(request: Request, name: str):
+        """Delete a custom role"""
+        role_store = request.app.state.role_store
+        try:
+            role_store.delete_role(name)
+            return {"deleted": name}
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
+
+    @app.post("/roles/{name}/permissions", tags=["roles"])
+    async def add_role_permissions(request: Request, name: str):
+        """Add permissions to a role"""
+        body = await request.json()
+        permissions = body.get("permissions", [])
+        if not permissions:
+            raise HTTPException(status_code=400, detail="permissions list required")
+        role_store = request.app.state.role_store
+        try:
+            role = role_store.add_permissions(name, permissions)
+            return {
+                "name": role.name,
+                "permissions": role.permissions,
+            }
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.delete("/roles/{name}/permissions", tags=["roles"])
+    async def remove_role_permissions(request: Request, name: str):
+        """Remove permissions from a role"""
+        body = await request.json()
+        permissions = body.get("permissions", [])
+        role_store = request.app.state.role_store
+        try:
+            role = role_store.remove_permissions(name, permissions)
+            return {
+                "name": role.name,
+                "permissions": role.permissions,
+            }
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.get("/permissions", tags=["roles"])
+    async def list_permissions(request: Request):
+        """List all available permissions"""
+        role_store = request.app.state.role_store
+        return {"permissions": role_store.list_permissions()}
 
     # ── User Management Endpoints (Admin) ───────────────────────────────────
 
