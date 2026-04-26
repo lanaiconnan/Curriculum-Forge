@@ -13,6 +13,15 @@ from .rbac import (
     SYSTEM_ROLES, DEFAULT_ROUTE_PERMISSIONS,
     get_role_store, reset_role_store,
 )
+from .sanitizer import (
+    mask_api_key, hash_api_key,
+    sanitize_user_dict, sanitize_user_response,
+    sanitize_apikey_response,
+    sanitize_log_value, sanitize_log_dict, sanitize_log_message,
+    sanitize_error_message,
+    get_security_headers, mask_email,
+    USER_SENSITIVE_FIELDS, SECURITY_HEADERS,
+)
 
 __all__ = [
     "APIKeyAuth",
@@ -31,4 +40,12 @@ __all__ = [
     "Role", "Permission", "RoleStore",
     "SYSTEM_ROLES", "DEFAULT_ROUTE_PERMISSIONS",
     "get_role_store", "reset_role_store",
+    # Sanitizer
+    "mask_api_key", "hash_api_key",
+    "sanitize_user_dict", "sanitize_user_response",
+    "sanitize_apikey_response",
+    "sanitize_log_value", "sanitize_log_dict", "sanitize_log_message",
+    "sanitize_error_message",
+    "get_security_headers", "mask_email",
+    "USER_SENSITIVE_FIELDS", "SECURITY_HEADERS",
 ]

@@ -78,6 +78,11 @@ from auth import (
     JWTAuth, JWTConfig, TokenPair, UserPayload, create_jwt_auth_from_env,
     UserStore, UserRecord, create_default_admin_user,
     RoleStore, get_role_store, DEFAULT_ROUTE_PERMISSIONS,
+    # Sanitizer
+    mask_api_key, hash_api_key,
+    sanitize_user_response, sanitize_apikey_response,
+    sanitize_log_dict, sanitize_log_message,
+    sanitize_error_message, get_security_headers,
 )
 
 # ── ACP ───────────────────────────────────────────────────────────────────────
@@ -307,6 +312,16 @@ def create_app(
         version="0.1.0",
     )
 
+    # ── Global Exception Handler (sanitize errors) ──────────────────────────
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        import traceback
+        logger.error(f"Unhandled exception: {sanitize_error_message(str(exc))}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error", "error": sanitize_error_message(str(exc))},
+        )
+
     # ── State ────────────────────────────────────────────────────────────────
 
     app.state.store = CachedCheckpointStore(checkpoint_store or CheckpointStore())
@@ -455,6 +470,15 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── Security Headers Middleware (P6.6) ────────────────────────────────────
+    @app.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        """Add security response headers to all responses."""
+        response = await call_next(request)
+        for header_name, header_value in get_security_headers().items():
+            response.headers[header_name] = header_value
+        return response
 
     # ── Stats Aggregator (Background Task) ───────────────────────────────────
     app.state.stats_aggregator = StatsAggregator(app.state.store)
@@ -950,16 +974,17 @@ def create_app(
                 target=record.key_id,
                 metadata={"client_id": client_id, "name": name, "scopes": scopes or ["read"]}
             )
-        return {
-            "key_id": record.key_id,
-            "api_key": record.api_key,
-            "client_id": record.client_id,
-            "name": record.name,
-            "scopes": record.scopes,
-            "expires_at": record.expires_at,
-            "rate_limit": record.rate_limit,
-            "created_at": record.created_at,
-        }
+        return sanitize_apikey_response(
+            key_id=record.key_id,
+            api_key=record.api_key,
+            client_id=record.client_id,
+            name=record.name,
+            scopes=record.scopes,
+            expires_at=record.expires_at,
+            rate_limit=record.rate_limit,
+            created_at=record.created_at,
+            mask_key=False,  # 创建时完整展示，仅此一次
+        )
 
 
     @app.get("/auth/keys", tags=["auth"])
@@ -972,17 +997,19 @@ def create_app(
         keys = store.list_keys(client_id=client_id, enabled_only=False)
         return {
             "keys": [
-                {
-                    "key_id": k.key_id,
-                    "client_id": k.client_id,
-                    "name": k.name,
-                    "scopes": k.scopes,
-                    "enabled": k.enabled,
-                    "expires_at": k.expires_at,
-                    "last_used_at": k.last_used_at,
-                    "rate_limit": k.rate_limit,
-                    "created_at": k.created_at,
-                }
+                sanitize_apikey_response(
+                    key_id=k.key_id,
+                    api_key=None,  # 列表不返回 key
+                    client_id=k.client_id,
+                    name=k.name,
+                    scopes=k.scopes,
+                    enabled=k.enabled,
+                    expires_at=k.expires_at,
+                    last_used_at=k.last_used_at,
+                    rate_limit=k.rate_limit,
+                    created_at=k.created_at,
+                    mask_key=True,
+                )
                 for k in keys
             ],
             "total": len(keys),
@@ -996,17 +1023,19 @@ def create_app(
         record = store.get_by_id(key_id)
         if not record:
             raise HTTPException(status_code=404, detail=f"API Key {key_id} not found")
-        return {
-            "key_id": record.key_id,
-            "client_id": record.client_id,
-            "name": record.name,
-            "scopes": record.scopes,
-            "enabled": record.enabled,
-            "expires_at": record.expires_at,
-            "last_used_at": record.last_used_at,
-            "rate_limit": record.rate_limit,
-            "created_at": record.created_at,
-        }
+        return sanitize_apikey_response(
+            key_id=record.key_id,
+            api_key=None,  # 查询时不返回完整 key
+            client_id=record.client_id,
+            name=record.name,
+            scopes=record.scopes,
+            enabled=record.enabled,
+            expires_at=record.expires_at,
+            last_used_at=record.last_used_at,
+            rate_limit=record.rate_limit,
+            created_at=record.created_at,
+            mask_key=True,
+        )
 
 
     @app.delete("/auth/keys/{key_id}", tags=["auth"])
@@ -1138,13 +1167,13 @@ def create_app(
             "refresh_token": tokens.refresh_token,
             "token_type": tokens.token_type,
             "expires_in": tokens.expires_in,
-            "user": {
-                "user_id": user.user_id,
-                "username": user.username,
-                "email": user.email,
-                "full_name": user.full_name,
-                "roles": user.roles,
-            }
+            "user": sanitize_user_response(
+                user_id=user.user_id,
+                username=user.username,
+                email=user.email,
+                full_name=user.full_name,
+                roles=user.roles,
+            )
         }
 
     @app.post("/auth/logout", tags=["auth"])
@@ -1228,14 +1257,15 @@ def create_app(
         user_store = request.app.state.user_store
         user = user_store.get_user(payload.user_id)
 
-        return {
-            "user_id": payload.user_id,
-            "username": payload.username,
-            "email": user.email if user else payload.email,
-            "full_name": user.full_name if user else None,
-            "roles": payload.roles,
-            "token_expires_in": jwt_auth.get_token_remaining_time(token),
-        }
+        result = sanitize_user_response(
+            user_id=payload.user_id,
+            username=payload.username,
+            email=user.email if user else payload.email,
+            full_name=user.full_name if user else None,
+            roles=payload.roles,
+        )
+        result["token_expires_in"] = jwt_auth.get_token_remaining_time(token)
+        return result
 
     # ── Role & Permission Management Endpoints (Admin) ────────────────────────
 
@@ -1401,14 +1431,14 @@ def create_app(
                 metadata={"username": username, "roles": roles or ["user"]}
             )
 
-        return {
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "full_name": user.full_name,
-            "roles": user.roles,
-            "created_at": user.created_at,
-        }
+        return sanitize_user_response(
+            user_id=user.user_id,
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            roles=user.roles,
+            created_at=user.created_at,
+        )
 
     @app.get("/users", tags=["users"])
     async def list_users(
@@ -1427,16 +1457,16 @@ def create_app(
 
         return {
             "users": [
-                {
-                    "user_id": u.user_id,
-                    "username": u.username,
-                    "email": u.email,
-                    "full_name": u.full_name,
-                    "roles": u.roles,
-                    "enabled": u.enabled,
-                    "last_login_at": u.last_login_at,
-                    "created_at": u.created_at,
-                }
+                sanitize_user_response(
+                    user_id=u.user_id,
+                    username=u.username,
+                    email=u.email,
+                    full_name=u.full_name,
+                    roles=u.roles,
+                    enabled=u.enabled,
+                    last_login_at=u.last_login_at,
+                    created_at=u.created_at,
+                )
                 for u in users
             ],
             "total": len(users),
@@ -1451,17 +1481,17 @@ def create_app(
         if not user:
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-        return {
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "full_name": user.full_name,
-            "roles": user.roles,
-            "enabled": user.enabled,
-            "last_login_at": user.last_login_at,
-            "created_at": user.created_at,
-            "updated_at": user.updated_at,
-        }
+        return sanitize_user_response(
+            user_id=user.user_id,
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            roles=user.roles,
+            enabled=user.enabled,
+            last_login_at=user.last_login_at,
+            created_at=user.created_at,
+            updated_at=user.updated_at,
+        )
 
     @app.patch("/users/{user_id}", tags=["users"])
     async def update_user(
@@ -1495,14 +1525,14 @@ def create_app(
                 metadata={"changes": {"email": email, "full_name": full_name, "roles": roles, "enabled": enabled}}
             )
 
-        return {
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "full_name": user.full_name,
-            "roles": user.roles,
-            "enabled": user.enabled,
-        }
+        return sanitize_user_response(
+            user_id=user.user_id,
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            roles=user.roles,
+            enabled=user.enabled,
+        )
 
     @app.delete("/users/{user_id}", tags=["users"])
     async def delete_user(

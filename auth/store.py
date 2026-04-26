@@ -8,6 +8,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass, field, asdict
+from auth.sanitizer import hash_api_key as _hash_api_key
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from threading import Lock
@@ -141,9 +142,11 @@ class APIKeyStore:
         api_key = self.generate_key()
         key_id = f"key_{secrets.token_hex(8)}"
 
+        api_key_hash = _hash_api_key(api_key)
+
         record = APIKeyRecord(
             key_id=key_id,
-            api_key=api_key,
+            api_key=api_key_hash,
             client_id=client_id,
             name=name,
             scopes=scopes or ["read"],
@@ -154,13 +157,13 @@ class APIKeyStore:
 
         with self._lock:
             self._keys[key_id] = record
-            self._key_index[api_key] = key_id
+            self._key_index[api_key_hash] = key_id
 
         self._save_to_file()
         return record
 
     def get_by_key(self, api_key: str) -> Optional[APIKeyRecord]:
-        """通过 API Key 获取记录"""
+        """通过 API Key (哈希值) 获取记录"""
         with self._lock:
             key_id = self._key_index.get(api_key)
             if not key_id:
@@ -250,7 +253,8 @@ class APIKeyStore:
         Returns:
             (is_valid, record) 元组
         """
-        record = self.get_by_key(api_key)
+        api_key_hash = _hash_api_key(api_key)
+        record = self.get_by_key(api_key_hash)
 
         if not record:
             return False, None
