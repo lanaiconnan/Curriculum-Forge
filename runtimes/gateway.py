@@ -190,15 +190,11 @@ async def get_current_user_roles(
     request: Request,
 ) -> List[str]:
     """
-    从 request.state 获取当前用户角色列表。
+    从 request.state 和 Authorization header 获取当前用户角色列表。
     支持 API Key (scopes) 和 JWT (roles) 两种认证方式。
     开发模式(无认证)下返回 admin 角色,跳过 RBAC。
     """
-    # 开发模式:无认证中间件时,授予全部权限
-    if not hasattr(request.state, "scopes") and not hasattr(request.state, "jwt_payload"):
-        return ["admin"]
-
-    # API Key 认证
+    # API Key 认证 - middleware 已经设置 scopes
     if hasattr(request.state, "scopes") and request.state.scopes:
         scopes = request.state.scopes
         if "admin" in scopes or "*" in scopes or "*.*" in str(scopes):
@@ -208,15 +204,19 @@ async def get_current_user_roles(
             roles.append("viewer")
         if "write" in scopes or "admin" in scopes:
             roles.append("operator")
-        if "admin" in scopes:
-            roles.append("admin")
         return list(set(roles)) if roles else ["viewer"]
 
-    # JWT 认证
-    if hasattr(request.state, "jwt_payload") and request.state.jwt_payload:
-        return request.state.jwt_payload.roles or []
+    # JWT Bearer token 验证(lazy,只在 Authorization header 中)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        jwt_auth = request.app.state.jwt_auth
+        payload = jwt_auth.verify_token(token, "access")
+        if payload:
+            return payload.roles or []
 
-    return []
+    # 开发模式(无认证):授予全部权限
+    return ["admin"]
 
 
 async def require_permissions(permissions: List[str]):
@@ -455,8 +455,13 @@ def create_app(
         app.add_middleware(
             APIKeyMiddleware,
             store=app.state.api_key_store,
-            public_paths={"/health", "/metrics", "/docs", "/openapi.json", "/redoc"},
-            public_prefixes={"/static/", "/assets/"},
+            public_paths={
+                "/health", "/metrics", "/docs", "/openapi.json", "/redoc",
+                "/auth/login", "/auth/refresh", "/auth/register", "/auth/me", "/auth/logout",  # Auth endpoints
+                "/jobs", "/jobs/{job_id}", "/jobs/compare",  # JWT-authenticated endpoints
+                "/profiles", "/stats", "/config", "/plugins",  # Read-only endpoints
+            },
+            public_prefixes={"/static/", "/assets/", "/ui/"},
         )
         logger.info("API Key authentication enabled")
     else:
@@ -550,6 +555,8 @@ def create_app(
 
     @app.get("/jobs", tags=["jobs"])
     async def list_jobs(
+        request: Request,
+        _: None = Depends(require_any_permission("jobs.read", "jobs.write")),
         profile: Optional[str] = Query(None, description="Filter by profile"),
         state: Optional[str] = Query(
             None, description="Filter by state (PENDING/RUNNING/COMPLETED/FAILED)"
@@ -1136,7 +1143,8 @@ def create_app(
             # 记录失败登录
             if hasattr(request.app.state, "audit"):
                 request.app.state.audit.log(
-                    action="user.login_failed",
+                    category="auth",
+                    event="login_failed",
                     actor=username,
                     metadata={"reason": "invalid_credentials"}
                 )
@@ -1156,7 +1164,8 @@ def create_app(
         # 记录成功登录
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.login",
+                category="auth",
+                event="login",
                 actor=user.username,
                 target=user.user_id,
                 metadata={"method": "password"}
@@ -1197,8 +1206,10 @@ def create_app(
         # 记录登出
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.logout",
-                actor=getattr(request.state, "username", "unknown")
+                category="auth",
+                event="logout",
+                actor=getattr(request.state, "username", "unknown"),
+                target=getattr(request.state, "user_id", ""),
             )
 
         return {"logged_out": True}
