@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import sse_starlette
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -176,6 +176,88 @@ def _dispatch_hook(app, hook_name: str, data: Dict[str, Any]) -> None:
             logger.debug(f"Hook '{hook_name}' stopped by plugin")
     except Exception as e:
         logger.error(f"Plugin hook '{hook_name}' dispatch error: {e}")
+
+
+# ── RBAC Permission Dependencies (module-level) ─────────────────────────────
+
+async def get_current_user_roles(
+    request: Request,
+) -> List[str]:
+    """
+    从 request.state 获取当前用户角色列表。
+    支持 API Key (scopes) 和 JWT (roles) 两种认证方式。
+    开发模式（无认证）下返回 admin 角色，跳过 RBAC。
+    """
+    # 开发模式：无认证中间件时，授予全部权限
+    if not hasattr(request.state, "scopes") and not hasattr(request.state, "jwt_payload"):
+        return ["admin"]
+
+    # API Key 认证
+    if hasattr(request.state, "scopes") and request.state.scopes:
+        scopes = request.state.scopes
+        if "admin" in scopes or "*" in scopes or "*.*" in str(scopes):
+            return ["admin"]
+        roles = []
+        if "read" in scopes:
+            roles.append("viewer")
+        if "write" in scopes or "admin" in scopes:
+            roles.append("operator")
+        if "admin" in scopes:
+            roles.append("admin")
+        return list(set(roles)) if roles else ["viewer"]
+
+    # JWT 认证
+    if hasattr(request.state, "jwt_payload") and request.state.jwt_payload:
+        return request.state.jwt_payload.roles or []
+
+    return []
+
+
+async def require_permissions(permissions: List[str]):
+    """
+    权限检查依赖工厂。
+    用法: async def handler(roles=Depends(require_permissions(["jobs.write"])))
+    """
+    async def check(request: Request):
+        role_store = request.app.state.role_store
+        user_roles = await get_current_user_roles(request)
+
+        for perm in permissions:
+            if role_store.check_permission(user_roles, perm):
+                return
+
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "forbidden",
+                "message": f"Insufficient permissions. Required one of: {permissions}",
+                "required": permissions,
+                "user_roles": user_roles,
+            }
+        )
+    return check
+
+
+def require_any_permission(*permissions):
+    """
+    路由级别权限保护装饰器（FastAPI Depends）。
+    用法: async def handler(permission=Depends(require_any_permission("jobs.read", "jobs.write")))
+    """
+    async def dependency(request: Request):
+        role_store = request.app.state.role_store
+        user_roles = await get_current_user_roles(request)
+        for perm in permissions:
+            if role_store.check_permission(user_roles, perm):
+                return perm
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "forbidden",
+                "message": f"Permission denied. Required one of: {list(permissions)}",
+                "required": list(permissions),
+            }
+        )
+    return dependency
 
 
 # ── App Factory ───────────────────────────────────────────────────────────────
@@ -899,8 +981,12 @@ def create_app(
 
 
     @app.delete("/auth/keys/{key_id}", tags=["auth"])
-    async def delete_api_key(request: Request, key_id: str):
-        """Delete an API Key."""
+    async def delete_api_key(
+        request: Request,
+        key_id: str,
+        _: None = Depends(require_any_permission("auth.admin")),
+    ):
+        """Delete an API Key. Requires auth.admin permission."""
         store = request.app.state.api_key_store
         if not store.delete_key(key_id):
             raise HTTPException(status_code=404, detail=f"API Key {key_id} not found")
@@ -970,86 +1056,6 @@ def create_app(
             "scopes": record.scopes,
             "rate_limit": record.rate_limit,
         }
-
-    # ── RBAC Permission Dependencies ──────────────────────────────────────
-
-    from fastapi import Depends
-    from fastapi.security import SecurityScopes
-    from typing import List
-
-    async def get_current_user_roles(
-        request: Request,
-    ) -> List[str]:
-        """
-        从 request.state 获取当前用户角色列表。
-        支持 API Key (scopes) 和 JWT (roles) 两种认证方式。
-        """
-        # API Key 认证
-        if hasattr(request.state, "scopes") and request.state.scopes:
-            # API Key 用 scopes 做权限判断，转换为角色列表（兼容模式）
-            scopes = request.state.scopes
-            if "admin" in scopes or "*" in scopes or "*.*" in str(scopes):
-                return ["admin"]
-            # scopes 格式如 read/write/admin，映射到对应角色
-            roles = []
-            if "read" in scopes:
-                roles.append("viewer")
-            if "write" in scopes or "admin" in scopes:
-                roles.append("operator")
-            if "admin" in scopes:
-                roles.append("admin")
-            return list(set(roles)) if roles else ["viewer"]
-
-        # JWT 认证
-        if hasattr(request.state, "jwt_payload") and request.state.jwt_payload:
-            return request.state.jwt_payload.roles or []
-
-        return []
-
-    async def require_permissions(permissions: List[str]):
-        """
-        权限检查依赖工厂。
-        用法: async def handler(roles=Depends(require_permissions(["jobs.write"])))
-        """
-        async def check(request: Request):
-            role_store = request.app.state.role_store
-            user_roles = await get_current_user_roles(request)
-
-            for perm in permissions:
-                if role_store.check_permission(user_roles, perm):
-                    return  # 有至少一个权限即可
-
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "forbidden",
-                    "message": f"Insufficient permissions. Required one of: {permissions}",
-                    "required": permissions,
-                    "user_roles": user_roles,
-                }
-            )
-        return check
-
-    def require_any_permission(*permissions):
-        """
-        路由级别权限保护装饰器（FastAPI Depends）。
-        用法: async def handler(permission=Depends(require_any_permission("jobs.read", "jobs.write")))
-        """
-        async def dependency(request: Request):
-            role_store = request.app.state.role_store
-            user_roles = await get_current_user_roles(request)
-            for perm in permissions:
-                if role_store.check_permission(user_roles, perm):
-                    return perm
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "forbidden",
-                    "message": f"Permission denied. Required one of: {list(permissions)}",
-                    "required": list(permissions),
-                }
-            )
-        return dependency
 
     # ── JWT Authentication Endpoints ──────────────────────────────────────
 
@@ -1284,8 +1290,12 @@ def create_app(
             raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
 
     @app.delete("/roles/{name}", tags=["roles"])
-    async def delete_role(request: Request, name: str):
-        """Delete a custom role"""
+    async def delete_role(
+        request: Request,
+        name: str,
+        _: None = Depends(require_any_permission("auth.admin")),
+    ):
+        """Delete a custom role. Requires auth.admin."""
         role_store = request.app.state.role_store
         try:
             role_store.delete_role(name)
@@ -1311,8 +1321,12 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(e))
 
     @app.delete("/roles/{name}/permissions", tags=["roles"])
-    async def remove_role_permissions(request: Request, name: str):
-        """Remove permissions from a role"""
+    async def remove_role_permissions(
+        request: Request,
+        name: str,
+        _: None = Depends(require_any_permission("auth.admin")),
+    ):
+        """Remove permissions from a role. Requires auth.admin."""
         body = await request.json()
         permissions = body.get("permissions", [])
         role_store = request.app.state.role_store
@@ -1341,6 +1355,7 @@ def create_app(
         email: Optional[str] = None,
         full_name: Optional[str] = None,
         roles: Optional[List[str]] = Query(None),
+        _: None = Depends(require_any_permission("users.manage")),
     ):
         """Create a new user (admin only)."""
         user_store = request.app.state.user_store
@@ -1435,6 +1450,7 @@ def create_app(
         full_name: Optional[str] = Query(None),
         roles: Optional[List[str]] = Query(None),
         enabled: Optional[bool] = Query(None),
+        _: None = Depends(require_any_permission("users.manage")),
     ):
         """Update user properties (admin only)."""
         user_store = request.app.state.user_store
@@ -1468,8 +1484,12 @@ def create_app(
         }
 
     @app.delete("/users/{user_id}", tags=["users"])
-    async def delete_user(request: Request, user_id: str):
-        """Delete user (admin only)."""
+    async def delete_user(
+        request: Request,
+        user_id: str,
+        _: None = Depends(require_any_permission("users.delete", "users.manage")),
+    ):
+        """Delete user. Requires users.delete or users.manage."""
         user_store = request.app.state.user_store
         
         if not user_store.delete_user(user_id):
@@ -2108,8 +2128,12 @@ def create_app(
         return {"id": schedule_id, **_scheduled_jobs[schedule_id]}
 
     @app.delete("/schedules/{schedule_id}", tags=["schedules"])
-    async def delete_schedule(schedule_id: str):
-        """Delete a scheduled job."""
+    async def delete_schedule(
+        request: Request,
+        schedule_id: str,
+        _: None = Depends(require_any_permission("schedules.write")),
+    ):
+        """Delete a schedule. Requires schedules.write."""
         if schedule_id in _scheduled_jobs:
             del _scheduled_jobs[schedule_id]
             app.state.audit.log("schedule.delete", {"schedule_id": schedule_id})
@@ -2117,8 +2141,12 @@ def create_app(
         return {"error": "Schedule not found"}, 404
 
     @app.patch("/schedules/{schedule_id}", tags=["schedules"])
-    async def update_schedule(schedule_id: str, request: Request):
-        """Update a scheduled job."""
+    async def update_schedule(
+        request: Request,
+        schedule_id: str,
+        _: None = Depends(require_any_permission("schedules.write")),
+    ):
+        """Update a schedule. Requires schedules.write."""
         if schedule_id not in _scheduled_jobs:
             return {"error": "Schedule not found"}, 404
         body = await request.json()
@@ -2225,8 +2253,12 @@ def create_app(
         return existing
 
     @app.delete("/templates/{name}", tags=["templates"])
-    async def delete_template(name: str):
-        """Delete a job template."""
+    async def delete_template(
+        request: Request,
+        name: str,
+        _: None = Depends(require_any_permission("templates.write")),
+    ):
+        """Delete a template. Requires templates.write."""
         _ensure_templates_dir()
         path = TEMPLATES_DIR / f"{name}.json"
         if not path.exists():
@@ -2270,16 +2302,20 @@ def create_app(
         }
 
     @app.delete("/acp/{agent_id}", tags=["acp"])
-    async def acp_unregister(agent_id: str):
-        """Unregister an ACP agent."""
-        found = app.state.acp_registry.unregister(agent_id)
+    async def acp_unregister(
+        request: Request,
+        agent_id: str,
+        _: None = Depends(require_any_permission("acp.write")),
+    ):
+        """Unregister an ACP agent. Requires acp.write."""
+        found = request.app.state.acp_registry.unregister(agent_id)
         if not found:
             raise HTTPException(status_code=404, detail="Agent not found")
-        app.state.audit.log(
+        request.app.state.audit.log(
             category="acp", event="agent_unregistered", actor=agent_id,
             target=agent_id
         )
-        _dispatch_hook(app, "agent:unregistered", {"agent_id": agent_id})
+        _dispatch_hook(request.app, "agent:unregistered", {"agent_id": agent_id})
         return {"agent_id": agent_id, "unregistered": True}
 
     @app.get("/acp/{agent_id}", tags=["acp"])
