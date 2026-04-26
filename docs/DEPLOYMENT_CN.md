@@ -73,6 +73,9 @@ ExecStart=/usr/bin/python3 main.py --gateway --port 8765 --host 0.0.0.0
 Restart=on-failure
 RestartSec=10
 Environment="PYTHONUNBUFFERED=1"
+Environment="CF_ENABLE_AUTH=1"
+Environment="CF_JWT_SECRET=your-256-bit-secret-change-this"
+Environment="CF_ADMIN_PASSWORD=your-secure-password"
 Environment="CF_TOPIC=Production"
 StandardOutput=journal
 StandardError=journal
@@ -163,6 +166,9 @@ services:
       - ./profiles:/app/profiles:ro
       - ./plugins:/app/plugins:ro
     environment:
+      - CF_ENABLE_AUTH=1
+      - CF_JWT_SECRET=your-256-bit-secret-change-this
+      - CF_ADMIN_PASSWORD=your-secure-password
       - CF_TOPIC=Production
       - CF_MAX_ITERATIONS=10
       - PYTHONUNBUFFERED=1
@@ -186,6 +192,8 @@ docker compose logs -f gateway
 
 ## 环境变量
 
+### 业务配置
+
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `CF_TOPIC` | 训练主题 | `Curriculum-Forge` |
@@ -195,6 +203,14 @@ docker compose logs -f gateway
 | `CF_GOAL` | 目标描述 | — |
 | `PYTHONUNBUFFERED` | 日志实时输出 | 1 |
 | `PORT` | Gateway 端口（覆盖 CLI） | 8765 |
+
+### 安全配置（P6 新增）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `CF_ENABLE_AUTH` | 启用认证和权限控制（生产必开）| `0` |
+| `CF_JWT_SECRET` | JWT 签名密钥（生产必须修改）| 随机生成 |
+| `CF_ADMIN_PASSWORD` | 默认 admin 用户密码 | `admin` |
 
 ---
 
@@ -280,22 +296,93 @@ curl http://localhost:8765/health
 
 ## 安全建议
 
-1. **限制 CORS**：生产环境将 `allow_origins=["*"]` 改为具体域名
-   ```python
-   app.add_middleware(
-       CORSMiddleware,
-       allow_origins=["https://your-ui-domain.com"],
-       allow_credentials=True,
-       allow_methods=["GET", "POST", "DELETE"],
-       allow_headers=["Authorization", "Content-Type"],
-   )
-   ```
+### 1. 启用认证（P6 新增，生产必做）
 
-2. **认证**：当前 API 无内置认证，建议通过 Nginx/Istio 添加 JWT 验证层，或在 API 网关层处理
+```bash
+# 必须设置
+export CF_ENABLE_AUTH=1
 
-3. **网络隔离**：Gateway 仅暴露必要端口（8765），数据库端口不应暴露
+# 强烈建议修改默认密钥和密码
+export CF_JWT_SECRET="your-256-bit-secret-key-here"
+export CF_ADMIN_PASSWORD="your-secure-admin-password"
+```
 
-4. **飞书/微信 Webhook 密钥**：使用 `verification_token` / `encrypt_key` 进行签名验证
+### 2. 修改默认 admin 密码
+
+首次启动后，立即修改默认密码：
+
+```bash
+# 登录获取 token
+curl -X POST http://localhost:8765/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin"}'
+
+# 使用返回的 token 修改密码
+curl -X POST http://localhost:8765/users/admin/password \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"current_password":"admin","new_password":"new-secure-password"}'
+```
+
+### 3. 限制 CORS
+
+生产环境将 `allow_origins=["*"]` 改为具体域名：
+
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://your-ui-domain.com"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+)
+```
+
+### 4. 网络隔离
+
+- Gateway 仅暴露必要端口（8765）
+- 数据库端口不应暴露
+- 使用防火墙限制访问 IP
+
+### 5. HTTPS 配置
+
+生产环境必须通过 Nginx/Traefik 启用 HTTPS：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+    
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+    
+    location / {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+### 6. 飞书/微信 Webhook 密钥
+
+使用 `verification_token` / `encrypt_key` 进行签名验证，防止伪造请求。
+
+### 7. 审计日志
+
+定期检查审计日志：
+
+```bash
+# 查看登录失败记录
+curl "http://localhost:8765/audit?event=login_failed" \
+  -H "Authorization: Bearer <admin-token>"
+
+# 查看审计统计
+curl http://localhost:8765/audit/stats \
+  -H "Authorization: Bearer <admin-token>"
+```
 
 ---
 
