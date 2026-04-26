@@ -56,6 +56,7 @@ from runtimes.profile_validator import (
     validate_profile, discover_profiles, get_effective_defaults,
     merge_config, DEFAULT_KEYS, SERVICE_DEFAULTS,
 )
+from runtimes.validators import *  # noqa: F403,F401 - request validation models
 
 # ── Audit Logger ───────────────────────────────────────────────────────────────
 
@@ -186,9 +187,9 @@ async def get_current_user_roles(
     """
     从 request.state 获取当前用户角色列表。
     支持 API Key (scopes) 和 JWT (roles) 两种认证方式。
-    开发模式（无认证）下返回 admin 角色，跳过 RBAC。
+    开发模式(无认证)下返回 admin 角色,跳过 RBAC。
     """
-    # 开发模式：无认证中间件时，授予全部权限
+    # 开发模式:无认证中间件时,授予全部权限
     if not hasattr(request.state, "scopes") and not hasattr(request.state, "jwt_payload"):
         return ["admin"]
 
@@ -240,7 +241,7 @@ async def require_permissions(permissions: List[str]):
 
 def require_any_permission(*permissions):
     """
-    路由级别权限保护装饰器（FastAPI Depends）。
+    路由级别权限保护装饰器(FastAPI Depends)。
     用法: async def handler(permission=Depends(require_any_permission("jobs.read", "jobs.write")))
     """
     async def dependency(request: Request):
@@ -258,6 +259,38 @@ def require_any_permission(*permissions):
             }
         )
     return dependency
+
+
+# ── Request Validation Helper ─────────────────────────────────────────────────
+
+from pydantic import ValidationError
+
+
+async def validate_request(request: Request, model_cls):
+    """
+    Parse JSON body and validate against a Pydantic model.
+    Returns the validated model instance.
+    Raises HTTPException(422) on validation failure.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    try:
+        return model_cls(**body)
+    except ValidationError as e:
+        # 格式化 Pydantic 错误为易读格式
+        errors = []
+        for err in e.errors():
+            loc = ".".join(str(l) for l in err["loc"])
+            errors.append({"field": loc, "message": err["msg"], "type": err["type"]})
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Validation failed",
+                "errors": errors,
+            },
+        )
 
 
 # ── App Factory ───────────────────────────────────────────────────────────────
@@ -315,7 +348,7 @@ def create_app(
     auth_data_dir = PROJECT_ROOT / "data"
     auth_data_dir.mkdir(parents=True, exist_ok=True)
     app.state.api_key_store = APIKeyStore(persist_file=str(auth_data_dir / "api_keys.json"))
-    # 自动创建默认 admin key（仅首次）
+    # 自动创建默认 admin key(仅首次)
     if app.state.api_key_store.count_keys() == 0:
         default_key = app.state.api_key_store.create_key(
             client_id="admin",
@@ -331,11 +364,11 @@ def create_app(
         storage_path=str(auth_data_dir / "users.json"),
         auto_save=True
     )
-    # 自动创建默认 admin 用户（仅首次）
+    # 自动创建默认 admin 用户(仅首次)
     admin_user = create_default_admin_user(app.state.user_store)
     if admin_user:
         logger.warning(f"Created default admin user: {admin_user.username}")
-        logger.warning("Default password: admin123 — CHANGE IN PRODUCTION!")
+        logger.warning("Default password: admin123 - CHANGE IN PRODUCTION!")
 
     # ── Role Store (RBAC) ─────────────────────────────────────────────────
     app.state.role_store = get_role_store()
@@ -350,7 +383,7 @@ def create_app(
     async def prometheus_middleware(request: Request, call_next):
         import time
         start_time = time.time()
-        
+
         # Extract endpoint pattern (remove path params)
         path = request.url.path
         # Normalize dynamic paths like /jobs/{id} -> /jobs/:id
@@ -366,16 +399,16 @@ def create_app(
             else:
                 normalized_parts.append(part)
         endpoint = '/' + '/'.join(normalized_parts) if normalized_parts else '/'
-        
+
         # Track in-progress
         prom_metrics.HTTP_REQUESTS_IN_PROGRESS.labels(
             method=request.method, endpoint=endpoint
         ).inc()
-        
+
         try:
             response = await call_next(request)
             duration = time.time() - start_time
-            
+
             # Track request
             prom_metrics.track_request(
                 method=request.method,
@@ -383,7 +416,7 @@ def create_app(
                 status=response.status_code,
                 duration=duration
             )
-            
+
             return response
         except Exception as e:
             duration = time.time() - start_time
@@ -401,8 +434,8 @@ def create_app(
 
 
     # ── API Key Authentication Middleware ─────────────────────────────────────
-    # 注意：必须在 CORS 之后添加，否则预检请求会被拦截
-    # 当前版本：禁用认证（开发模式），通过环境变量启用
+    # 注意:必须在 CORS 之后添加,否则预检请求会被拦截
+    # 当前版本:禁用认证(开发模式),通过环境变量启用
     if os.environ.get("CF_ENABLE_AUTH", "").lower() in ("1", "true", "yes"):
         app.add_middleware(
             APIKeyMiddleware,
@@ -526,12 +559,12 @@ def create_app(
             config (dict, optional): Runtime config overrides
             proposal (dict, optional): Full proposal payload (takes precedence)
         """
-        body = await request.json()
+        body = await validate_request(request, JobCreateRequest)
         store = app.state.store
 
         # ── Path 1: Proposal payload ────────────────────────────────────────
-        if "proposal" in body:
-            proposal = body["proposal"]
+        if body.proposal is not None:
+            proposal = body.proposal
             run_id = store.new_id()
             record = CheckpointRecord(
                 id=run_id,
@@ -564,11 +597,7 @@ def create_app(
             return {"job": _record_to_api(record), "created": True}
 
         # ── Path 2: Profile name ────────────────────────────────────────────
-        profile_name = body.get("profile")
-        if not profile_name:
-            raise HTTPException(
-                status_code=400, detail="Either 'profile' or 'proposal' is required"
-            )
+        profile_name = body.profile
 
         profile_path = PROJECT_ROOT / "profiles" / f"{profile_name}.json"
         if not profile_path.exists():
@@ -581,7 +610,7 @@ def create_app(
             profile_data = json.load(f)
 
         # Apply runtime config overrides (highest priority)
-        api_overrides = body.get("config_overrides", {})
+        api_overrides = body.config_overrides or {}
         effective_config = merge_config(profile_data, api_overrides)
 
         run_id = store.new_id()
@@ -594,7 +623,7 @@ def create_app(
             config=effective_config,
             state_data={},
             metrics={},
-            description=body.get("description", f"Job from profile '{profile_name}'"),
+            description=body.description or f"Job from profile '{profile_name}'",
         )
         # 使用线程池执行阻塞 I/O
         loop = asyncio.get_event_loop()
@@ -664,7 +693,7 @@ def create_app(
             "error": metrics.get("error"),
             # 分阶段耗时 breakdown
             "phase_durations": phase_durations,
-            # Token 消耗（如果 Provider 记录了）
+            # Token 消耗(如果 Provider 记录了)
             "tokens_used": metrics.get("tokens_used"),
             "tokens_prompt": metrics.get("tokens_prompt"),
             "tokens_completion": metrics.get("tokens_completion"),
@@ -1067,12 +1096,12 @@ def create_app(
     ):
         """
         User login with username/password.
-        
+
         Returns JWT token pair (access + refresh).
         """
         user_store = request.app.state.user_store
         jwt_auth = request.app.state.jwt_auth
-        
+
         user = user_store.authenticate(username, password)
         if not user:
             # 记录失败登录
@@ -1086,7 +1115,7 @@ def create_app(
                 status_code=401,
                 detail="Invalid username or password"
             )
-        
+
         # 创建 token pair
         tokens = jwt_auth.create_token_pair(
             user_id=user.user_id,
@@ -1094,7 +1123,7 @@ def create_app(
             roles=user.roles,
             email=user.email
         )
-        
+
         # 记录成功登录
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
@@ -1103,7 +1132,7 @@ def create_app(
                 target=user.user_id,
                 metadata={"method": "password"}
             )
-        
+
         return {
             "access_token": tokens.access_token,
             "refresh_token": tokens.refresh_token,
@@ -1122,55 +1151,51 @@ def create_app(
     async def logout(request: Request):
         """
         Logout user by invalidating their tokens.
-        
+
         Requires Authorization: Bearer <token> header.
         """
         auth_header = request.headers.get("Authorization", "")
         token = None
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-        
+
         if not token:
             raise HTTPException(status_code=401, detail="Token required")
-        
+
         jwt_auth = request.app.state.jwt_auth
         jwt_auth.invalidate_token(token)
-        
+
         # 记录登出
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
                 action="user.logout",
                 actor=getattr(request.state, "username", "unknown")
             )
-        
+
         return {"logged_out": True}
 
     @app.post("/auth/refresh", tags=["auth"])
     async def refresh_token(request: Request):
         """
         Refresh access token using refresh token.
-        
+
         Request body: {"refresh_token": "..."}
         """
         from pydantic import BaseModel
-        
+
         class RefreshRequest(BaseModel):
             refresh_token: str
-        
-        body = await request.json()
-        refresh_token = body.get("refresh_token")
-        if not refresh_token:
-            raise HTTPException(status_code=400, detail="refresh_token required")
-        
+
+        body = await validate_request(request, RefreshRequest)
         jwt_auth = request.app.state.jwt_auth
-        tokens = jwt_auth.refresh_access_token(refresh_token)
-        
+        tokens = jwt_auth.refresh_access_token(body.refresh_token)
+
         if not tokens:
             raise HTTPException(
                 status_code=401,
                 detail="Invalid or expired refresh token"
             )
-        
+
         return {
             "access_token": tokens.access_token,
             "refresh_token": tokens.refresh_token,
@@ -1182,27 +1207,27 @@ def create_app(
     async def get_current_user(request: Request):
         """
         Get current user information from JWT token.
-        
+
         Requires Authorization: Bearer <token> header.
         """
         auth_header = request.headers.get("Authorization", "")
         token = None
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-        
+
         if not token:
             raise HTTPException(status_code=401, detail="Token required")
-        
+
         jwt_auth = request.app.state.jwt_auth
         payload = jwt_auth.verify_token(token)
-        
+
         if not payload:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
-        
+
         # 获取完整用户信息
         user_store = request.app.state.user_store
         user = user_store.get_user(payload.user_id)
-        
+
         return {
             "user_id": payload.user_id,
             "username": payload.username,
@@ -1250,15 +1275,15 @@ def create_app(
     @app.post("/roles", tags=["roles"], status_code=201)
     async def create_role(request: Request):
         """Create a custom role"""
-        body = await request.json()
+        body = await validate_request(request, RoleCreateRequest)
         role_store = request.app.state.role_store
         try:
             from auth.rbac import Role
             role = Role(
-                name=body["name"],
-                display_name=body.get("display_name", body["name"]),
-                description=body.get("description", ""),
-                permissions=body.get("permissions", []),
+                name=body.name,
+                display_name=body.display_name or body.name,
+                description=body.description or "",
+                permissions=body.permissions,
                 is_system=False,
             )
             created = role_store.create_role(role)
@@ -1275,10 +1300,10 @@ def create_app(
     @app.put("/roles/{name}", tags=["roles"])
     async def update_role(request: Request, name: str):
         """Update a role"""
-        body = await request.json()
+        body = await validate_request(request, RoleUpdateRequest)
         role_store = request.app.state.role_store
         try:
-            role = role_store.update_role(name, body)
+            role = role_store.update_role(name, body.dict(exclude_unset=True))
             return {
                 "name": role.name,
                 "display_name": role.display_name,
@@ -1306,13 +1331,10 @@ def create_app(
     @app.post("/roles/{name}/permissions", tags=["roles"])
     async def add_role_permissions(request: Request, name: str):
         """Add permissions to a role"""
-        body = await request.json()
-        permissions = body.get("permissions", [])
-        if not permissions:
-            raise HTTPException(status_code=400, detail="permissions list required")
+        body = await validate_request(request, RolePermissionRequest)
         role_store = request.app.state.role_store
         try:
-            role = role_store.add_permissions(name, permissions)
+            role = role_store.add_permissions(name, body.permissions)
             return {
                 "name": role.name,
                 "permissions": role.permissions,
@@ -1327,11 +1349,10 @@ def create_app(
         _: None = Depends(require_any_permission("auth.admin")),
     ):
         """Remove permissions from a role. Requires auth.admin."""
-        body = await request.json()
-        permissions = body.get("permissions", [])
+        body = await validate_request(request, RolePermissionRequest)
         role_store = request.app.state.role_store
         try:
-            role = role_store.remove_permissions(name, permissions)
+            role = role_store.remove_permissions(name, body.permissions)
             return {
                 "name": role.name,
                 "permissions": role.permissions,
@@ -1359,7 +1380,7 @@ def create_app(
     ):
         """Create a new user (admin only)."""
         user_store = request.app.state.user_store
-        
+
         try:
             user = user_store.create_user(
                 username=username,
@@ -1370,7 +1391,7 @@ def create_app(
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        
+
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
@@ -1379,7 +1400,7 @@ def create_app(
                 target=user.user_id,
                 metadata={"username": username, "roles": roles or ["user"]}
             )
-        
+
         return {
             "user_id": user.user_id,
             "username": user.username,
@@ -1403,7 +1424,7 @@ def create_app(
             role=role,
             limit=limit
         )
-        
+
         return {
             "users": [
                 {
@@ -1426,10 +1447,10 @@ def create_app(
         """Get user by ID (admin only)."""
         user_store = request.app.state.user_store
         user = user_store.get_user(user_id)
-        
+
         if not user:
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-        
+
         return {
             "user_id": user.user_id,
             "username": user.username,
@@ -1461,10 +1482,10 @@ def create_app(
             roles=roles,
             enabled=enabled
         )
-        
+
         if not user:
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-        
+
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
@@ -1473,7 +1494,7 @@ def create_app(
                 target=user_id,
                 metadata={"changes": {"email": email, "full_name": full_name, "roles": roles, "enabled": enabled}}
             )
-        
+
         return {
             "user_id": user.user_id,
             "username": user.username,
@@ -1491,10 +1512,10 @@ def create_app(
     ):
         """Delete user. Requires users.delete or users.manage."""
         user_store = request.app.state.user_store
-        
+
         if not user_store.delete_user(user_id):
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-        
+
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
@@ -1502,7 +1523,7 @@ def create_app(
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
             )
-        
+
         return {"deleted": True, "user_id": user_id}
 
     @app.post("/users/{user_id}/change-password", tags=["users"])
@@ -1513,10 +1534,10 @@ def create_app(
     ):
         """Change user password (admin or self)."""
         user_store = request.app.state.user_store
-        
+
         if not user_store.change_password(user_id, new_password):
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-        
+
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
@@ -1524,17 +1545,17 @@ def create_app(
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
             )
-        
+
         return {"password_changed": True, "user_id": user_id}
 
     @app.post("/users/{user_id}/unlock", tags=["users"])
     async def unlock_user(request: Request, user_id: str):
         """Unlock locked user account (admin only)."""
         user_store = request.app.state.user_store
-        
+
         if not user_store.unlock_user(user_id):
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-        
+
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
@@ -1542,7 +1563,7 @@ def create_app(
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
             )
-        
+
         return {"unlocked": True, "user_id": user_id}
 
     # ── System Stats ────────────────────────────────────────────────────────
@@ -1571,7 +1592,7 @@ def create_app(
         if cached:
             return cached.to_dict()
 
-        # 缓存未命中，回退到实时计算
+        # 缓存未命中,回退到实时计算
         store = app.state.store
         records = store.list(limit=10000)
 
@@ -1749,6 +1770,7 @@ def create_app(
         plugin = pm.get_plugin(name)
         if plugin is None:
             raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+        body = await validate_request(request, PluginConfigRequest)
         config = await request.json()
         plugin._config = config
         return {"name": name, "config": config}
@@ -1894,10 +1916,10 @@ def create_app(
         coordinator = getattr(app.state, "coordinator", None)
         if coordinator is None:
             raise HTTPException(status_code=503, detail="No coordinator configured")
-        body = await request.json()
-        name = body.get("name", "unnamed")
-        description = body.get("description", "")
-        tasks = body.get("tasks", [])
+        body = await validate_request(request, WorkflowCreateRequest)
+        name = body.name or "unnamed"
+        description = body.description or ""
+        tasks = body.tasks
 
         workflow = coordinator.create_workflow(name=name, description=description)
 
@@ -1949,8 +1971,8 @@ def create_app(
             total (int): Number of jobs created
             failed (list): Indices of failed creations (empty if all succeeded)
         """
-        body = await request.json()
-        jobs_spec = body.get("jobs", [])
+        body = await validate_request(request, BatchJobRequest)
+        jobs_spec = body.jobs
         if not jobs_spec:
             return {"jobs": [], "total": 0, "failed": []}
 
@@ -1991,7 +2013,7 @@ def create_app(
                         proposal={"goal": profile.get("goal", "unspecified")},
                     )
 
-                # 使用线程池执行阻塞 I/O（Python 3.7 兼容）
+                # 使用线程池执行阻塞 I/O(Python 3.7 兼容)
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, lambda: store.save(record))
                 if hasattr(app.state, "coordinator") and app.state.coordinator:
@@ -2017,7 +2039,7 @@ def create_app(
     # Scheduled Jobs - 定时任务
     # ════════════════════════════════════════════════════════════════════════
 
-    # 内存存储（生产环境应使用数据库）
+    # 内存存储(生产环境应使用数据库)
     _scheduled_jobs = {}  # id -> {spec, next_run, interval, enabled}
     _scheduler_task = None
 
@@ -2090,19 +2112,17 @@ def create_app(
         Returns:
             id, next_run, interval, enabled
         """
-        body = await request.json()
-        spec = body.get("spec", {})
-        interval = body.get("interval", 3600)
-        enabled = body.get("enabled", True)
-
+        body = await validate_request(request, ScheduleCreateRequest)
         schedule_id = f"sched_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
         next_run = (datetime.now(timezone.utc) + timedelta(seconds=interval)).isoformat()
 
         _scheduled_jobs[schedule_id] = {
             "spec": spec,
-            "interval": interval,
-            "enabled": enabled,
+            "interval": body.interval_seconds,
+            "enabled": body.enabled,
             "next_run": next_run,
+            "name": body.name,
+            "description": body.description or "",
         }
 
         _start_scheduler()
@@ -2149,15 +2169,17 @@ def create_app(
         """Update a schedule. Requires schedules.write."""
         if schedule_id not in _scheduled_jobs:
             return {"error": "Schedule not found"}, 404
-        body = await request.json()
+        body = await validate_request(request, ScheduleUpdateRequest)
         sched = _scheduled_jobs[schedule_id]
-        if "enabled" in body:
-            sched["enabled"] = body["enabled"]
-        if "interval" in body:
-            sched["interval"] = body["interval"]
-            sched["next_run"] = (datetime.now(timezone.utc) + timedelta(seconds=body["interval"])).isoformat()
-        if "spec" in body:
-            sched["spec"] = body["spec"]
+        if body.name is not None:
+            sched["name"] = body.name
+        if body.enabled is not None:
+            sched["enabled"] = body.enabled
+        if body.interval_seconds is not None:
+            sched["interval"] = body.interval_seconds
+            sched["next_run"] = (datetime.now(timezone.utc) + timedelta(seconds=body.interval_seconds)).isoformat()
+        if body.description is not None:
+            sched["description"] = body.description
         app.state.audit.log("schedule.update", {"schedule_id": schedule_id})
         return {"id": schedule_id, **sched}
 
@@ -2208,10 +2230,8 @@ def create_app(
             profile (str): Default profile
             config (dict, optional): Default config
         """
-        body = await request.json()
-        name = body.get("name")
-        if not name:
-            return {"error": "name required"}, 400
+        body = await validate_request(request, TemplateCreateRequest)
+        name = body.name
 
         _ensure_templates_dir()
         path = TEMPLATES_DIR / f"{name}.json"
@@ -2239,15 +2259,13 @@ def create_app(
             return {"error": "Template not found"}, 404
 
         existing = json.loads(path.read_text())
-        body = await request.json()
-
-        if "description" in body:
-            existing["description"] = body["description"]
-        if "profile" in body:
-            existing["profile"] = body["profile"]
-        if "config" in body:
-            existing["config"] = body["config"]
-
+        body = await validate_request(request, TemplateUpdateRequest)
+        if body.name is not None:
+            existing["name"] = body.name
+        if body.description is not None:
+            existing["description"] = body.description
+        if body.config_overrides is not None:
+            existing["config"] = body.config_overrides
         path.write_text(json.dumps(existing, indent=2))
         app.state.audit.log("template.update", {"template_name": name})
         return existing
@@ -2276,28 +2294,25 @@ def create_app(
     @app.post("/acp/register", tags=["acp"], status_code=201)
     async def acp_register(request: Request):
         """Register an external ACP agent."""
-        body = await request.json()
-        agent_id = body.get("agent_id")
-        if not agent_id:
-            raise HTTPException(status_code=400, detail="agent_id is required")
+        body = await validate_request(request, ACPRegisterRequest)
         agent = ACPAgent(
-            agent_id=agent_id,
-            name=body.get("name", agent_id),
-            role=body.get("role", "general"),
-            capabilities=body.get("capabilities", []),
+            agent_id=body.agent_id,
+            name=body.name or body.agent_id,
+            role=body.role,
+            capabilities=body.capabilities,
         )
         session_id = app.state.acp_registry.register(agent)
-        logger.info(f"ACP registered: {agent_id}")
+        logger.info(f"ACP registered: {body.agent_id}")
         app.state.audit.log(
-            category="acp", event="agent_registered", actor=agent_id,
-            target=agent_id, metadata={"name": agent.name, "role": agent.role}
+            category="acp", event="agent_registered", actor=body.agent_id,
+            target=body.agent_id, metadata={"name": agent.name, "role": agent.role}
         )
         _dispatch_hook(app, "agent:registered", {
-            "agent_id": agent_id, "name": agent.name, "role": agent.role
+            "agent_id": body.agent_id, "name": agent.name, "role": agent.role
         })
         return {
             "session_id": session_id,
-            "agent_id": agent_id,
+            "agent_id": body.agent_id,
             "gateway_url": str(request.base_url).rstrip("/"),
         }
 
@@ -2339,10 +2354,8 @@ def create_app(
     @app.post("/acp/{agent_id}/heartbeat", tags=["acp"])
     async def acp_heartbeat(agent_id: str, request: Request):
         """Keep-alive ping. Optionally report task progress."""
-        body = await request.json()
-        progress_pct = body.get("progress_pct")
-        message = body.get("message", "")
-        found = app.state.acp_registry.heartbeat(agent_id, progress_pct, message)
+        body = await validate_request(request, ACPHeartbeatRequest)
+        found = app.state.acp_registry.heartbeat(agent_id, body.progress_pct, body.message)
         if not found:
             raise HTTPException(status_code=404, detail="Agent not found")
         return {"agent_id": agent_id, "ok": True}
@@ -2372,20 +2385,19 @@ def create_app(
     @app.post("/acp/{agent_id}/tasks/{task_id}/complete", tags=["acp"])
     async def acp_complete_task(agent_id: str, task_id: str, request: Request):
         """Agent reports task completion with result."""
-        body = await request.json()
-        result = body.get("result", {})
-        task = app.state.acp_registry.complete_task(agent_id, task_id, result)
+        body = await validate_request(request, ACPCompleteTaskRequest)
+        task = app.state.acp_registry.complete_task(agent_id, task_id, body.result)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         # Emit to coordinator event bus so UI/channels can react
         _emit_coordinator_event(app, "acp_task_completed", {
             "agent_id": agent_id,
             "task_id": task_id,
-            "result": result,
+            "result": body.result,
         })
         app.state.audit.log(
             category="acp", event="task_completed", actor=agent_id,
-            target=task_id, metadata={"result": result}
+            target=task_id, metadata={"result": body.result}
         )
         return {"task": task.to_dict()}
 
