@@ -10,8 +10,6 @@ Tests the full ACP lifecycle:
 
 import asyncio
 import json
-import os
-os.environ["CF_ENABLE_AUTH"] = "0"
 
 import pytest
 from fastapi.testclient import TestClient

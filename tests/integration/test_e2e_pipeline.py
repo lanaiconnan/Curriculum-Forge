@@ -5,8 +5,6 @@ Phase 2 Item 6: End-to-end integration test for linear Pipeline flow.
 Channel message → Job creation → Provider execution → SSE events → completion
 """
 
-import os
-os.environ["CF_ENABLE_AUTH"] = "0"
 
 import asyncio
 import json

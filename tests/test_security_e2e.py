@@ -15,8 +15,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-# Set auth env var before any imports
-os.environ["CF_ENABLE_AUTH"] = "1"
+@pytest.fixture(autouse=True)
+def _enable_auth(monkeypatch):
+    """Enable auth for all tests in this module. Overrides session-level CF_ENABLE_AUTH=0."""
+    monkeypatch.setenv("CF_ENABLE_AUTH", "1")
 
 
 def _make_app():

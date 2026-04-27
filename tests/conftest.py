@@ -4,6 +4,7 @@ pytest 配置文件，用于：
 1. 定义测试路径
 2. 配置覆盖率报告
 3. 设置测试标记
+4. 测试环境隔离
 """
 
 import pytest
@@ -12,6 +13,9 @@ import os
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 默认关闭认证（integration tests 使用），security tests 通过 monkeypatch 覆盖
+os.environ.setdefault("CF_ENABLE_AUTH", "0")
 
 
 def pytest_configure(config):

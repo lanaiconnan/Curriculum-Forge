@@ -8,8 +8,6 @@ Tests the full webhook lifecycle for Feishu and WeChat channels:
 """
 
 import json
-import os
-os.environ["CF_ENABLE_AUTH"] = "0"
 
 import pytest
 from unittest.mock import MagicMock, patch
