@@ -211,7 +211,7 @@ pytest tests/integration/ -v
 pytest tests/ -v --cov=. --cov-report=html
 ```
 
-**当前测试基线**：1080 passed, 1 skipped
+**当前测试基线**：1274 passed, 1 skipped
 
 ---
 
@@ -223,7 +223,7 @@ pytest tests/ -v --cov=. --cov-report=html
 | [API 文档](docs/GATEWAY_API_CN.md) | Gateway REST API |
 | [部署指南](docs/DEPLOYMENT_CN.md) | Docker/K8s 部署 |
 | [安全指南](docs/SECURITY_GUIDE_CN.md) | 认证与权限 |
-| [配置说明](docs/CONFIG_CN.md) | 配置参数详解 |
+| [配置说明](docs/CONFIG_GUIDE_CN.md) | 配置参数详解 |
 
 ---
 
