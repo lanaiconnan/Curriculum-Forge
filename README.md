@@ -2,13 +2,13 @@
 
 <div align="center">
 
-**Curriculum Learning for Tool-Using Reinforcement Learning Agents**
+**AI Agent Town — 多 Agent 协作治理系统**
 
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GStack](https://img.shields.io/badge/Framework-GStack-green.svg)](https://github.com/openclaw/openclaw)
 
-*Building AI agents that learn to use tools through structured curricula*
+*构建 AI Agent 协作、学习、进化的"小镇"*
 
 [English](README.md) | [中文](README_CN.md)
 
@@ -16,189 +16,197 @@
 
 ---
 
-## 📖 Overview
+## 📖 项目简介
 
-Curriculum-Forge is a **Dual-Agent Reinforcement Learning Framework** for training AI agents to use tools effectively through curriculum learning. Inspired by cutting-edge research from OpenAI, Anthropic, and the AutoDidact project.
+Curriculum-Forge 正在演进为 **AI Agent Town** —— 一个多 Agent 协作系统，让多个 AI Agent 在其中协作、学习、进化，共同完成复杂任务。
 
-### 🎯 Key Features
+### 🎯 核心目标
 
-- **Dual-Agent Architecture**: Agent A (Generator/Analyst) + Agent B (Learner/Executor)
-- **ToolRL Integration**: Reinforcement learning for tool selection and parameter generation
-- **Curriculum Learning**: Progressive difficulty scaling for efficient training
-- **Harness Engineering**: DocGardening + ArchitectureRuleEngine for maintainability
-- **Letta-style Memory**: Structured memory blocks (Core/Archival/Recall)
-- **Verification Mechanism**: SelfVerifier + ConfidenceTracker + EnhancedRewardCalculator
+- 🤝 **多 Agent 协作**：多个 Agent 按角色分工，协同完成任务
+- 🧠 **自我演进**：Agent 能够从经验中学习，持续改进
+- 🏛️ **协作治理**：建立治理机制，管理 Agent 行为和资源
+- 📚 **知识沉淀**：将经验转化为可复用的知识库
 
----
+### 🚀 当前进展
 
-## 🏗️ Architecture
-
-```
-Curriculum-Forge
-├── agent_a/                 # Generator Agent
-│   ├── generator.py         # Environment generation
-│   └── analyst.py           # Progress analysis
-├── agent_b/                 # Learner Agent
-│   └── learner.py           # Experiment execution
-├── rl/                      # Reinforcement Learning
-│   ├── trainer.py           # GRPO/GAE trainer
-│   ├── self_verifier.py     # Verification mechanism
-│   └── enhanced_reward_calculator.py
-├── tools/                   # Tool Layer
-│   ├── git.py              # Git operations
-│   ├── moon.py             # Moon API
-│   └── memory.py           # Letta-style Memory
-├── shared/                  # Shared Components
-│   ├── scratchpad.py       # Structured logging
-│   ├── time_budget.py      # Time constraints
-│   ├── doc_gardening.py    # Document maintenance
-│   └── architecture_engine.py
-└── tests/                   # Test Suite
-    └── unit/
-```
+| 阶段 | 状态 | 内容 |
+|------|------|------|
+| Phase 1 | ✅ 完成 | 知识层基础（Syzygy Vault + Experience Generator） |
+| Phase 2 | 🚧 进行中 | Stella 记忆增强 |
+| Phase 3 | 📋 计划中 | 治理层（Keeper、Mayor、Front Desk） |
 
 ---
 
-## 🚀 Quick Start
+## 🏗️ 架构概览
 
-### Installation
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        AI Agent Town                         │
+├─────────────────────────────────────────────────────────────┤
+│  用户层        │  Human Operators / API Clients              │
+├─────────────────────────────────────────────────────────────┤
+│  治理层        │  Keeper │ Mayor │ Front Desk                │
+├─────────────────────────────────────────────────────────────┤
+│  Agent 层      │  Teacher │ Learner │ Reviewer │ Stella      │
+├─────────────────────────────────────────────────────────────┤
+│  知识层        │  Syzygy Vault（Markdown + [[wikilink]]）     │
+├─────────────────────────────────────────────────────────────┤
+│  进化层        │  auto-research 风格的研究循环                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 核心组件
+
+| 组件 | 说明 |
+|------|------|
+| **Syzygy Vault** | 知识库存储，Markdown 格式 + 双向链接 |
+| **Experience Generator** | 从任务执行生成经验页 |
+| **Stella** | 记忆增强型 Agent，检索历史经验辅助决策 |
+| **Keeper** | 资源管理（任务调度、负载均衡） |
+| **Mayor** | 规则与声誉管理 |
+| **Front Desk** | 用户交互前台 |
+
+---
+
+## 🔧 已实现功能
+
+### Phase 1 - 知识层 ✅
+
+```python
+from syzygy_core.knowledge import SyzygyVault, ExperienceGenerator
+
+# 创建知识库
+vault = SyzygyVault("~/agent_town/vault")
+
+# 生成经验页
+generator = ExperienceGenerator(vault)
+exp = generator.generate(task, result)
+
+# 检索历史经验
+results = vault.search_by_tags(["error-handling", "retry"])
+
+# 知识图谱可视化
+print(vault.ascii_graph("task_123"))
+```
+
+**测试覆盖**：9/9 tests passing
+
+---
+
+## 📚 技术栈
+
+| 类别 | 技术 |
+|------|------|
+| **语言** | Python 3.7+ |
+| **Web 框架** | FastAPI |
+| **异步运行时** | asyncio |
+| **知识库** | Markdown + [[wikilink]] |
+| **认证** | API Key + JWT |
+| **部署** | Docker + K8s + Helm |
+
+---
+
+## 🚀 快速开始
+
+### 安装
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/curriculum-forge.git
-cd curriculum-forge
+# 克隆项目
+git clone https://github.com/lanaiconnan/Curriculum-Forge.git
+cd Curriculum-Forge
 
-# Install dependencies
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-### Basic Usage
+### 启动 Gateway
 
 ```bash
-# Run dual-agent training (default 10 iterations)
-python main.py --mode dual --iterations 10
+# 开发模式
+python runtimes/gateway.py
 
-# Run single agent mode (for testing)
-python main.py --mode single --iterations 5
-
-# Use GAE instead of GRPO
-python main.py --mode dual --iterations 10 --no-grpo
-
-# Custom time budget
-python main.py --mode dual --iterations 10 --exp-time 300 --iter-time 1800
+# 生产模式（Docker）
+docker-compose up -d
 ```
 
-### CLI Commands
+### CLI 工具
 
 ```bash
-# Show program.md for an agent
-python cli.py show agent_a
-
-# Check if an action is allowed
-python cli.py check agent_a "modify:agent_b/learner.py"
-
-# Show system status
-python cli.py status
-
-# Show verification statistics
-python cli.py verification
-
-# Show confidence tracking
-python cli.py confidence
-
-# DocGardening check
+# 文档健康检查
 python cli.py garden
 
-# Architecture validation
+# 架构规则验证
 python cli.py arch
+
+# 查看系统状态
+python cli.py status
 ```
 
 ---
 
-## 🧪 Testing
+## 🧪 测试
 
 ```bash
-# Run all unit tests
+# 运行所有测试
+pytest tests/ -v
+
+# 单元测试
 pytest tests/unit/ -v
 
-# Run with coverage
-pytest tests/unit/ -v --cov=. --cov-report=html
+# 集成测试
+pytest tests/integration/ -v
 
-# Run specific test file
-pytest tests/unit/test_memory.py -v
+# 覆盖率报告
+pytest tests/ -v --cov=. --cov-report=html
 ```
 
----
-
-## 📚 Documentation
-
-- [Quick Start Guide](docs/QUICKSTART.md)
-- [API Reference](docs/API.md)
-- [Examples](docs/EXAMPLES.md)
-- [Architecture Guide](docs/ARCHITECTURE.md)
-- [中文文档](docs/QUICKSTART_CN.md)
+**当前测试基线**：1080 passed, 1 skipped
 
 ---
 
-## 🔬 Research Background
+## 📖 文档
 
-This project implements ideas from several research papers:
-
-- **Curriculum Learning**: Bengio et al. (2009)
-- **Tool Learning**: Qin et al. (2023) - Tool Learning with Foundation Models
-- **GRPO**: Group Relative Policy Optimization
-- **AutoDidact**: Self-improving AI systems
-- **Letta/MemGPT**: Memory management for LLM agents
-
----
-
-## 🔄 Producer-Reviewer Protocol (v1.1)
-
-Based on [Harness](https://github.com/revfactory/harness)'s architecture patterns, a structured collaboration loop between Agent A and Agent B:
-
-```python
-from protocols.integration import ProducerReviewerIntegration
-
-integration = ProducerReviewerIntegration(
-    agent_a=agent_a,
-    agent_b=agent_b,
-    trainer=trainer,
-    experience_buffer=buffer,
-)
-
-result = integration.run_episode(
-    stage="intermediate",
-    objectives=["Optimize performance", "Reduce memory"],
-)
-```
-
-**Key features:**
-- **Iterative Review Loop**: Agent A reviews Agent B's output before accepting
-- **5 Quality Gates**: Format, Completeness, Accuracy, Performance, Style
-- **Progressive Disclosure**: More hints revealed after failed attempts
-- **GRPO Integration**: Review scores directly feed into reward calculation
-- **Feedback Pattern Analysis**: Tracks recurring issues for improvement
+| 文档 | 说明 |
+|------|------|
+| [架构设计](AI_AGENT_TOWN_ARCHITECTURE.md) | AI Agent Town 完整架构蓝图 |
+| [API 文档](docs/GATEWAY_API_CN.md) | Gateway REST API |
+| [部署指南](docs/DEPLOYMENT_CN.md) | Docker/K8s 部署 |
+| [安全指南](docs/SECURITY_GUIDE_CN.md) | 认证与权限 |
+| [配置说明](docs/CONFIG_CN.md) | 配置参数详解 |
 
 ---
 
-## 🤝 Contributing
+## 🔄 项目演进
 
-Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+Curriculum-Forge 最初是一个 **Curriculum Learning for Tool-Using RL Agents** 框架，现在正在演进为 **AI Agent Town** 多 Agent 协作系统。
+
+### 历史版本
+
+| 版本 | 定位 |
+|------|------|
+| v1.0 | 双 Agent RL 训练框架 |
+| v2.0 | 多 Agent 协作治理系统（进行中） |
 
 ---
 
-## 📄 License
+## 🤝 贡献
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+欢迎贡献！请查看 [Contributing Guide](CONTRIBUTING.md) 了解详情。
 
 ---
 
-## 🙏 Acknowledgments
+## 📄 许可证
 
-- **OpenAI** - For the Harness Engineering insights
-- **Anthropic** - For Claude and AI safety research
-- **Letta** - For the Memory Block architecture
-- **AutoDidact** - For self-improvement concepts
+MIT License - 详见 [LICENSE](LICENSE) 文件。
+
+---
+
+## 🙏 致谢
+
+- **Karpathy** - auto-research 项目启发
+- **OpenAI** - Harness Engineering 理念
+- **Anthropic** - Claude 与 AI 安全研究
+- **Letta/MemGPT** - Memory Block 架构
 
 ---
 
