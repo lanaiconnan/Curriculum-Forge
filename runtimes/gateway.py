@@ -85,6 +85,12 @@ from auth import (
     sanitize_error_message, get_security_headers,
 )
 
+# ── Knowledge Layer ────────────────────────────────────────────────────────
+
+from knowledge.syzygy import SyzygyVault, ExperiencePage
+from knowledge.experience_generator import ExperienceGenerator
+from roles.stella import Stella, MemoryContext
+
 # ── ACP ───────────────────────────────────────────────────────────────────────
 
 def _get_acp_registry():
@@ -2365,6 +2371,274 @@ def create_app(
         path.unlink()
         app.state.audit.log("template.delete", {"template_name": name})
         return {"deleted": True}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Knowledge Layer API - Memory & Experience Management
+    # ════════════════════════════════════════════════════════════════════════
+
+    # Knowledge vault path
+    KNOWLEDGE_VAULT_PATH = PROJECT_ROOT / "vault"
+
+    def _get_vault():
+        """Get or create Syzygy vault instance."""
+        vault_path = KNOWLEDGE_VAULT_PATH
+        vault_path.mkdir(exist_ok=True)
+        return SyzygyVault(str(vault_path))
+
+    @app.get("/memory/pages", tags=["memory"])
+    async def list_memory_pages(
+        request: Request,
+        tag: Optional[str] = Query(None, description="Filter by tag"),
+        limit: int = Query(50, ge=1, le=500),
+    ):
+        """List all experience pages in the knowledge vault."""
+        vault = _get_vault()
+        if tag:
+            pages = vault.search_by_tag(tag)
+        else:
+            # list_all_pages returns titles, need to get full pages
+            titles = vault.list_all_pages()
+            pages = [vault.get_page(t) for t in titles]
+            pages = [p for p in pages if p]  # Filter None
+        
+        return {
+            "pages": [
+                {
+                    "title": p.title,
+                    "tags": p.tags,
+                    "created_at": p.metadata.get("created_at"),
+                    "task_id": p.metadata.get("task_id"),
+                }
+                for p in pages[:limit]
+            ],
+            "total": len(pages),
+        }
+
+    @app.get("/memory/pages/{title}", tags=["memory"])
+    async def get_memory_page(title: str):
+        """Get a specific experience page by title."""
+        vault = _get_vault()
+        page = vault.get_page(title)
+        if not page:
+            raise HTTPException(status_code=404, detail=f"Page '{title}' not found")
+        
+        # Get backlinks
+        backlinks = vault.get_backlinks(title)
+        
+        return {
+            "title": page.title,
+            "content": page.content,
+            "tags": page.tags,
+            "metadata": page.metadata,
+            "backlinks": [bl.title for bl in backlinks],
+        }
+
+    @app.post("/memory/pages", tags=["memory"], status_code=201)
+    async def create_memory_page(request: Request):
+        """Create a new experience page manually."""
+        vault = _get_vault()
+        body = await request.json()
+        
+        title = body.get("title")
+        content = body.get("content", "")
+        tags = body.get("tags", [])
+        
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+        
+        vault.create_page(title=title, content=content, tags=tags)
+        
+        # Audit log
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                category="memory",
+                event="page_created",
+                actor=getattr(request.state, "username", "system"),
+                target=title,
+                metadata={"tags": tags}
+            )
+        
+        return {"created": True, "title": title}
+
+    @app.post("/memory/retrieve", tags=["memory"])
+    async def retrieve_experiences(request: Request):
+        """
+        Retrieve relevant experiences for a task.
+        
+        Body:
+            task_id (str): Task ID
+            task_type (str): Task type for tag matching
+            description (str): Task description for keyword search
+        Returns:
+            MemoryContext with relevant experiences and recommendations
+        """
+        vault = _get_vault()
+        coordinator = getattr(request.app.state, "coordinator", None)
+        
+        body = await request.json()
+        
+        # Create mock task for retrieval
+        from unittest.mock import Mock
+        task = Mock()
+        task.id = body.get("task_id", "unknown")
+        task.type = body.get("task_type", "general")
+        task.description = body.get("description", "")
+        task.status = Mock()
+        task.status.value = "pending"
+        
+        # Use Stella for retrieval (simplified, no coordinator integration)
+        stella = Stella(coordinator, vault)
+        ctx = stella.retrieve_experiences(task)
+        
+        return {
+            "task_id": ctx.task_id,
+            "relevant_experiences": [
+                {
+                    "title": exp.title,
+                    "content": exp.content[:500] + "..." if len(exp.content) > 500 else exp.content,
+                    "tags": exp.tags,
+                    "metadata": exp.metadata,
+                }
+                for exp in ctx.relevant_experiences
+            ],
+            "recommendations": ctx.recommendations,
+            "confidence_score": ctx.confidence_score,
+        }
+
+    @app.post("/memory/store", tags=["memory"], status_code=201)
+    async def store_experience(request: Request):
+        """
+        Store an experience manually.
+        
+        Body:
+            task_id (str): Associated task ID
+            task_type (str): Task type
+            title (str, optional): Custom title
+            background (str): Background/context
+            approach (str): Approach taken
+            result (str): Result achieved
+            lessons (str): Lessons learned
+            tags (list): Additional tags
+        Returns:
+            Created page info
+        """
+        vault = _get_vault()
+        body = await request.json()
+        
+        # Build title
+        task_id = body.get("task_id", str(uuid.uuid4()))
+        task_type = body.get("task_type", "general")
+        title = body.get("title") or f"任务：{task_id}"
+        
+        # Build content
+        content_parts = []
+        
+        if body.get("background"):
+            content_parts.append("## 背景")
+            content_parts.append(body["background"])
+            content_parts.append("")
+        
+        if body.get("approach"):
+            content_parts.append("## 方案")
+            content_parts.append(body["approach"])
+            content_parts.append("")
+        
+        if body.get("result"):
+            content_parts.append("## 结果")
+            content_parts.append(body["result"])
+            content_parts.append("")
+        
+        if body.get("lessons"):
+            content_parts.append("## 经验教训")
+            content_parts.append(body["lessons"])
+            content_parts.append("")
+        
+        content = "\n".join(content_parts)
+        
+        # Build tags
+        tags = [task_type]
+        if body.get("tags"):
+            tags.extend(body["tags"])
+        tags = list(set(tags))
+        
+        # Create page
+        vault.create_page(
+            title=title,
+            content=content,
+            tags=tags,
+            metadata={
+                "task_id": task_id,
+                "task_type": task_type,
+            }
+        )
+        
+        # Audit log
+        if hasattr(request.app.state, "audit"):
+            request.app.state.audit.log(
+                category="memory",
+                event="experience_stored",
+                actor=getattr(request.state, "username", "system"),
+                target=task_id,
+                metadata={"title": title}
+            )
+        
+        return {
+            "created": True,
+            "title": title,
+            "task_id": task_id,
+            "tags": tags,
+        }
+
+    @app.get("/memory/stats", tags=["memory"])
+    async def get_memory_stats(request: Request):
+        """Get knowledge vault statistics."""
+        vault = _get_vault()
+        titles = vault.list_all_pages()
+        
+        # Get all pages and count by tags
+        tag_counts = {}
+        for title in titles:
+            page = vault.get_page(title)
+            if page:
+                for tag in page.tags:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        
+        # Get ASCII graph
+        ascii_graph = vault.generate_ascii_graph()
+        
+        return {
+            "total_pages": len(titles),
+            "tag_distribution": dict(sorted(tag_counts.items(), key=lambda x: -x[1])),
+            "ascii_graph": ascii_graph,
+        }
+
+    @app.get("/memory/graph", tags=["memory"])
+    async def get_knowledge_graph():
+        """Get ASCII knowledge graph visualization."""
+        vault = _get_vault()
+        return {"graph": vault.generate_ascii_graph()}
+
+    @app.get("/memory/search", tags=["memory"])
+    async def search_memory(
+        q: str = Query(..., description="Search query"),
+        limit: int = Query(20, ge=1, le=100),
+    ):
+        """Search experience pages by keyword."""
+        vault = _get_vault()
+        results = vault.search_by_keyword(q)
+        
+        return {
+            "query": q,
+            "results": [
+                {
+                    "title": r.title,
+                    "snippet": r.content[:200] + "..." if len(r.content) > 200 else r.content,
+                    "tags": r.tags,
+                }
+                for r in results[:limit]
+            ],
+            "total": len(results),
+        }
 
     # ACP - Agent Control Protocol
     # ════════════════════════════════════════════════════════════════════════
