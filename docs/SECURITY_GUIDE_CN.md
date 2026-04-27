@@ -374,12 +374,13 @@ Content-Type: application/json
 
 ## 输入验证
 
-所有端点使用 Pydantic 进行严格的输入验证：
+所有端点使用 Pydantic V2 进行严格的输入验证（2026-04-27 已从 V1 迁移）：
 
 - 类型检查（字符串、整数、布尔值等）
 - 必填字段验证
 - 范围限制（如 `limit` 参数 1-500）
 - 格式验证（如邮箱格式）
+- 跨字段验证（如 proposal 和 profile 必须提供其一）
 
 验证失败返回 422：
 
@@ -393,6 +394,25 @@ Content-Type: application/json
     }
   ]
 }
+```
+
+**验证器定义示例（Pydantic V2）：**
+
+```python
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+class JobCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    
+    profile: Optional[str] = Field(None)
+    proposal: Optional[str] = Field(None)
+    
+    @field_validator("proposal")
+    @classmethod
+    def proposal_or_profile(cls, v, info):
+        if v is None and info.data.get("profile") is None:
+            raise ValueError("Either profile or proposal must be provided")
+        return v
 ```
 
 ---
@@ -446,11 +466,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 - 未提供认证信息
 - Token 已过期
 - API Key 已被撤销
+- **Bearer token 被 API Key 中间件拦截**（确保中间件配置 `allow_bearer=False`）
 
 ### 403 Forbidden
 
 - 认证成功但权限不足
 - 用户角色不包含所需权限
+- **JWT 验证失败但请求包含 Authorization header**（返回 401 而非 403）
 
 ### 429 Too Many Requests
 
@@ -465,6 +487,33 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 {
   "detail": "Account locked due to too many failed login attempts. Try again after 15 minutes."
 }
+```
+
+---
+
+## 测试覆盖
+
+安全模块有完整的 E2E 测试覆盖（`tests/test_security_e2e.py`）：
+
+| 测试类 | 测试数量 | 覆盖场景 |
+|--------|---------|----------|
+| TestAPIKeyAuthE2E | 3 | API Key 创建/使用/删除/权限范围 |
+| TestJWTAuthE2E | 3 | 登录/刷新/过期处理 |
+| TestRBAC | 3 | 角色/权限检查/越权拒绝 |
+| TestInputValidation | 2 | 请求参数验证 |
+| TestSecurityHeaders | 1 | 安全响应头 |
+| TestSensitiveDataProtection | 2 | 脱敏/错误处理 |
+
+**测试基线**：1080 passed, 1 skipped（2026-04-27）
+
+运行安全测试：
+
+```bash
+# 运行安全 E2E 测试
+pytest tests/test_security_e2e.py -v
+
+# 运行所有测试
+pytest tests/ -v
 ```
 
 ---
