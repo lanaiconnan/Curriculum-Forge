@@ -143,7 +143,16 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         # 提取 API Key
         api_key = self._extract_api_key(request)
 
-        if not api_key:
+        # 如果请求中有 Authorization: Bearer token 但 allow_bearer=False，
+        # 说明这是 JWT token，跳过 API Key 认证让下游 JWT dependency 处理
+        auth_header = request.headers.get("Authorization", "")
+        is_jwt_bearer = (
+            not api_key
+            and auth_header.startswith("Bearer ")
+            and not self.allow_bearer
+        )
+
+        if not api_key and not is_jwt_bearer:
             return JSONResponse(
                 status_code=401,
                 content={
@@ -151,6 +160,10 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                     "message": "API Key required. Use X-API-Key header or Authorization: Bearer <key>"
                 }
             )
+
+        # JWT Bearer token: 放行让下游 JWT dependency 处理
+        if is_jwt_bearer:
+            return await call_next(request)
 
         # 验证 API Key
         is_valid, record = self.store.verify_key(api_key)

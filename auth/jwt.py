@@ -38,7 +38,7 @@ class TokenPair:
     """Access and refresh token pair"""
     access_token: str
     refresh_token: str
-    token_type: str = "Bearer"
+    token_type: str = "bearer"
     expires_in: int = 900  # 15 minutes in seconds
 
 

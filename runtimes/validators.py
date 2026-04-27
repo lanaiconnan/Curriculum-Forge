@@ -289,16 +289,11 @@ class UserPasswordChangeRequest(BaseValidator):
 
 class APIKeyCreateRequest(BaseValidator):
     """POST /auth/keys"""
+    client_id: Optional[str] = Field(None, max_length=64)
     name: str = Field(..., min_length=1, max_length=64)
-    scopes: List[str] = Field(default_factory=list)
+    scope: Optional[str] = Field(None)  # Accept single scope like "write"
+    rate_limit_per_hour: int = Field(default=1000, ge=1, le=10000)
     expires_in_days: Optional[int] = Field(None, ge=1, le=365)
-
-    @validator("scopes")
-    def scopes_format(cls, v):
-        for s in v:
-            if not PERMISSION_RE.match(s):
-                raise ValueError(f"Invalid scope format: '{s}' (expected resource.action)")
-        return v
 
 
 class APIKeyUpdateRequest(BaseValidator):

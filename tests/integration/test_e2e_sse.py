@@ -12,6 +12,9 @@ requests, and test job lifecycle separately.
 """
 
 import json
+import os
+os.environ["CF_ENABLE_AUTH"] = "0"
+
 import pytest
 from fastapi.testclient import TestClient
 

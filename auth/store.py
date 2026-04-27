@@ -18,16 +18,17 @@ from datetime import datetime
 @dataclass
 class APIKeyRecord:
     """API Key 记录"""
-    key_id: str                    # Key 唯一标识
-    api_key: str                   # 实际的 API Key（哈希后存储）
-    client_id: str                 # 客户端标识
-    name: str                      # Key 名称
-    scopes: List[str] = field(default_factory=lambda: ["read"])  # 权限范围
+    key_id: str                    # Key 唯一标识（无默认值，必须在前）
+    api_key: str                   # 哈希后的 API Key（无默认值）
+    client_id: str                 # 客户端标识（无默认值）
+    name: str                      # Key 名称（无默认值）
+    scopes: List[str] = field(default_factory=lambda: ["read"])
     created_at: float = field(default_factory=time.time)
-    expires_at: Optional[float] = None  # 过期时间（None 表示永不过期）
+    expires_at: Optional[float] = None
     last_used_at: Optional[float] = None
     enabled: bool = True
-    rate_limit: int = 1000          # 每小时请求限制
+    rate_limit: int = 1000
+    raw_key: Optional[str] = None   # 原始 API Key（仅创建时存在，创建后为 None）
     metadata: Dict = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
@@ -147,6 +148,7 @@ class APIKeyStore:
         record = APIKeyRecord(
             key_id=key_id,
             api_key=api_key_hash,
+            raw_key=api_key,
             client_id=client_id,
             name=name,
             scopes=scopes or ["read"],

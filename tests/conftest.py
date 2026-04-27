@@ -38,3 +38,14 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.integration)
         elif "unit" in item.nodeid:
             item.add_marker(pytest.mark.unit)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def reset_role_store_singleton():
+    """Reset RoleStore singleton between test sessions to avoid cross-pollution."""
+    yield
+    try:
+        from auth.rbac import reset_role_store
+        reset_role_store()
+    except Exception:
+        pass

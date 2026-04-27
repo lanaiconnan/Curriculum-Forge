@@ -188,11 +188,16 @@ def _dispatch_hook(app, hook_name: str, data: Dict[str, Any]) -> None:
 
 async def get_current_user_roles(
     request: Request,
-) -> List[str]:
+) -> Optional[List[str]]:
     """
     从 request.state 和 Authorization header 获取当前用户角色列表。
     支持 API Key (scopes) 和 JWT (roles) 两种认证方式。
     开发模式(无认证)下返回 admin 角色,跳过 RBAC。
+
+    Returns:
+        None 表示有认证头但验证失败（需要 401）
+        [] 表示无认证头（需要 403）
+        List[str] 有效角色列表（通过 RBAC）
     """
     # API Key 认证 - middleware 已经设置 scopes
     if hasattr(request.state, "scopes") and request.state.scopes:
@@ -214,19 +219,31 @@ async def get_current_user_roles(
         payload = jwt_auth.verify_token(token, "access")
         if payload:
             return payload.roles or []
+        # 有 Bearer header 但 JWT 无效 → 返回 None（触发 401）
+        return None
 
-    # 开发模式(无认证):授予全部权限
+    # 没有 Authorization header: 开发模式(无认证)授予全部权限
     return ["admin"]
 
 
-async def require_permissions(permissions: List[str]):
+async def require_any_permission(*permissions: str):
     """
     权限检查依赖工厂。
-    用法: async def handler(roles=Depends(require_permissions(["jobs.write"])))
+    用法: async def handler(permission=Depends(require_any_permission("jobs.read", "jobs.write")))
     """
     async def check(request: Request):
         role_store = request.app.state.role_store
         user_roles = await get_current_user_roles(request)
+
+        # 无效 token（有 Authorization header 但验证失败）→ 401
+        if user_roles is None:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "unauthorized",
+                    "message": "Invalid or expired token",
+                }
+            )
 
         for perm in permissions:
             if role_store.check_permission(user_roles, perm):
@@ -252,6 +269,15 @@ def require_any_permission(*permissions):
     async def dependency(request: Request):
         role_store = request.app.state.role_store
         user_roles = await get_current_user_roles(request)
+        # 无效 token（有 Authorization header 但验证失败）→ 401
+        if user_roles is None:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "unauthorized",
+                    "message": "Invalid or expired token",
+                }
+            )
         for perm in permissions:
             if role_store.check_permission(user_roles, perm):
                 return perm
@@ -455,13 +481,19 @@ def create_app(
         app.add_middleware(
             APIKeyMiddleware,
             store=app.state.api_key_store,
+            allow_bearer=False,  # JWT tokens use Authorization: Bearer; only X-API-Key header for API keys
             public_paths={
                 "/health", "/metrics", "/docs", "/openapi.json", "/redoc",
                 "/auth/login", "/auth/refresh", "/auth/register", "/auth/me", "/auth/logout",  # Auth endpoints
-                "/jobs", "/jobs/{job_id}", "/jobs/compare",  # JWT-authenticated endpoints
+                "/auth/keys", "/auth/keys/{key_id}",  # API Key management
+                "/jobs/compare",  # JWT-authenticated endpoints (but /jobs itself requires auth)
                 "/profiles", "/stats", "/config", "/plugins",  # Read-only endpoints
+                "/roles",  # RBAC endpoints
+                "/users",  # User management endpoints
             },
-            public_prefixes={"/static/", "/assets/", "/ui/"},
+            # Prefix-based bypass: covers parameterized paths like /roles/{name}, /users/{user_id}
+            # NOTE: /jobs/ NOT included here — /jobs is NOT public and needs JWT auth
+            public_prefixes={"/static/", "/assets/", "/ui/", "/roles/", "/users/", "/auth/keys/"},
         )
         logger.info("API Key authentication enabled")
     else:
@@ -581,7 +613,10 @@ def create_app(
         }
 
     @app.post("/jobs", tags=["jobs"], status_code=201)
-    async def create_job(request: Request):
+    async def create_job(
+        request: Request,
+        _: None = Depends(require_any_permission("jobs.write")),
+    ):
         """
         Create a new job from a profile or proposal.
 
@@ -954,36 +989,33 @@ def create_app(
     @app.post("/auth/keys", tags=["auth"], status_code=201)
     async def create_api_key(
         request: Request,
-        client_id: str,
-        name: str,
-        scopes: Optional[List[str]] = Query(None),
-        rate_limit: int = Query(1000, description="Requests per hour"),
-        expires_in_hours: Optional[int] = Query(None, description="Expiration time in hours"),
+        body: APIKeyCreateRequest,
     ):
         """Create a new API Key."""
         store = request.app.state.api_key_store
         expires_at = None
-        if expires_in_hours:
+        if body.expires_in_days:
             import time
-            expires_at = time.time() + (expires_in_hours * 3600)
+            expires_at = time.time() + (body.expires_in_days * 86400)
         record = store.create_key(
-            client_id=client_id,
-            name=name,
-            scopes=scopes or ["read"],
-            rate_limit=rate_limit,
+            client_id=body.client_id or "default",
+            name=body.name,
+            scopes=[body.scope] if body.scope else ["read"],
+            rate_limit=body.rate_limit_per_hour or 1000,
             expires_at=expires_at,
         )
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="api_key.created",
+                category="api_key",
+                event="created",
                 actor=getattr(request.state, "client_id", "system"),
                 target=record.key_id,
-                metadata={"client_id": client_id, "name": name, "scopes": scopes or ["read"]}
+                metadata={"client_id": body.client_id or "default", "name": body.name, "scopes": [body.scope] if body.scope else ["read"]}
             )
         return sanitize_apikey_response(
             key_id=record.key_id,
-            api_key=record.api_key,
+            api_key=record.raw_key or record.api_key,
             client_id=record.client_id,
             name=record.name,
             scopes=record.scopes,
@@ -1058,7 +1090,8 @@ def create_app(
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="api_key.deleted",
+                category="api_key",
+                event="deleted",
                 actor=getattr(request.state, "client_id", "system"),
                 target=key_id,
             )
@@ -1436,7 +1469,8 @@ def create_app(
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.created",
+                category="user",
+                event="created",
                 actor=getattr(request.state, "username", "system"),
                 target=user.user_id,
                 metadata={"username": username, "roles": roles or ["user"]}
@@ -1454,6 +1488,7 @@ def create_app(
     @app.get("/users", tags=["users"])
     async def list_users(
         request: Request,
+        _: None = Depends(require_any_permission("users.manage")),
         enabled_only: bool = Query(False),
         role: Optional[str] = Query(None),
         limit: int = Query(100, le=1000),
@@ -1530,7 +1565,8 @@ def create_app(
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.updated",
+                category="user",
+                event="updated",
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
                 metadata={"changes": {"email": email, "full_name": full_name, "roles": roles, "enabled": enabled}}
@@ -1560,7 +1596,8 @@ def create_app(
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.deleted",
+                category="user",
+                event="deleted",
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
             )
@@ -1582,7 +1619,8 @@ def create_app(
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.password_changed",
+                category="user",
+                event="password_changed",
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
             )
@@ -1600,7 +1638,8 @@ def create_app(
         # 记录审计日志
         if hasattr(request.app.state, "audit"):
             request.app.state.audit.log(
-                action="user.unlocked",
+                category="user",
+                event="unlocked",
                 actor=getattr(request.state, "username", "system"),
                 target=user_id,
             )
