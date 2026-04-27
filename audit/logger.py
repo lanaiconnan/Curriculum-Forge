@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 AuditRecord = Dict[str, Any]
 
-CATEGORIES = {"job", "acp", "workflow", "channel", "gateway"}
+CATEGORIES = {"job", "acp", "workflow", "channel", "gateway", "governance"}
 
 
 # ── AuditLogger ────────────────────────────────────────────────────────────────
