@@ -2,7 +2,9 @@
 name = "dual-agent-tool-rl"
 version = "0.1.0"
 description = "Dual-Agent ToolRL System"
-requires-python = ">=3.10"
+# Project targets Python 3.7 compatibility
+# CI tests 3.9+ because GitHub Actions deprecated Python 3.7 support
+requires-python = ">=3.7"
 dependencies = []
 
 [build-system]
