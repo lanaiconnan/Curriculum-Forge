@@ -16,6 +16,17 @@ from datetime import datetime
 import logging
 import json
 
+from governance.metrics import (
+    track_rule_evaluation,
+    track_rule_violation,
+    track_reputation_change,
+    MAYOR_AGENTS_TRUSTED,
+    MAYOR_AGENTS_BANNED,
+    MAYOR_PROPOSALS_TOTAL,
+    MAYOR_PROPOSALS_RESOLVED,
+    MAYOR_VOTES_CAST,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -280,9 +291,13 @@ class Mayor:
         
         for rule in self._rules.values():
             violation = rule.evaluate(context)
+            passed = violation is None
+            track_rule_evaluation(rule.rule_type.value, passed)
+            
             if violation:
                 violations.append(violation)
                 self._violations.append(violation)
+                track_rule_violation(rule.id, violation.severity.value)
                 
                 # 应用声誉影响
                 if "agent_id" in context and violation.reputation_impact != 0:
@@ -322,7 +337,22 @@ class Mayor:
     ) -> ReputationRecord:
         """应用声誉变化"""
         record = self.get_or_create_reputation(agent_id)
+        old_score = record.score
         record.apply_change(delta, reason, rule_id)
+        
+        # Metrics
+        track_reputation_change(agent_id, old_score, record.score)
+        
+        # 更新可信/封禁计数
+        if old_score < self.TRUSTED_THRESHOLD and record.score >= self.TRUSTED_THRESHOLD:
+            MAYOR_AGENTS_TRUSTED.inc()
+        elif old_score >= self.TRUSTED_THRESHOLD and record.score < self.TRUSTED_THRESHOLD:
+            MAYOR_AGENTS_TRUSTED.dec()
+        
+        if old_score >= self.BAN_THRESHOLD and record.score < self.BAN_THRESHOLD:
+            MAYOR_AGENTS_BANNED.inc()
+        elif old_score < self.BAN_THRESHOLD and record.score >= self.BAN_THRESHOLD:
+            MAYOR_AGENTS_BANNED.dec()
         
         # 回调
         if self._on_reputation_change:

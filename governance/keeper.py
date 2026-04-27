@@ -16,6 +16,17 @@ from enum import Enum
 from datetime import datetime
 import logging
 
+from governance.metrics import (
+    track_agent_registered,
+    track_agent_deregistered,
+    track_task_assigned,
+    KEEPER_RESOURCE_TOTAL,
+    KEEPER_RESOURCE_USED,
+    KEEPER_TASKS_REJECTED,
+    KEEPER_HEALTH_CHECKS_TOTAL,
+    KEEPER_AGENTS_UNHEALTHY,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -206,6 +217,9 @@ class Keeper:
         self._agents[agent_id] = profile
         logger.info(f"Registered agent: {agent_id} ({role}) with capabilities: {capabilities}")
         
+        # Metrics
+        track_agent_registered(role, is_new=agent_id not in self._agents)
+        
         # 回调
         if self._on_agent_registered:
             self._on_agent_registered(profile)
@@ -226,6 +240,9 @@ class Keeper:
         
         del self._agents[agent_id]
         logger.info(f"Unregistered agent: {agent_id}")
+        
+        # Metrics
+        track_agent_deregistered(profile.role)
         
         # 回调
         if self._on_agent_unregistered:
@@ -416,6 +433,7 @@ class Keeper:
         if not candidates:
             logger.warning(f"No available agents for task {task_id}")
             self._failed_assignments += 1
+            KEEPER_TASKS_REJECTED.labels(reason='no_available_agent').inc()
             return None
         
         # 使用策略评分
@@ -437,6 +455,10 @@ class Keeper:
         agent = best_agent
         logger.info(f"Assigned task {task_id} to Agent: {agent.id} ({agent.role}), score: {best_score:.2f}")
         self._total_assignments += 1
+        
+        # Metrics
+        policy_name = policy.name if hasattr(policy, 'name') else 'default'
+        track_task_assigned(agent.id, policy_name, 0.0)  # duration tracked externally
         
         # 更新 agent 状态
         agent.current_tasks.append(task_id)

@@ -16,6 +16,15 @@ from enum import Enum
 from datetime import datetime
 import logging
 
+from governance.metrics import (
+    track_request_received,
+    track_request_completed,
+    track_session_created,
+    track_session_ended,
+    FRONTDESK_REQUESTS_IN_QUEUE,
+    FRONTDESK_BATCH_OPERATIONS,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,6 +177,10 @@ class FrontDesk:
         session.requests.append(request_id)
         session.touch()
         
+        # Metrics
+        track_request_received(priority.name)
+        FRONTDESK_REQUESTS_IN_QUEUE.labels(priority=priority.name).inc()
+        
         logger.info(f"Received request {request_id} from user {user_id}")
         
         # 回调
@@ -308,6 +321,11 @@ class FrontDesk:
         
         # 从处理中移除
         self._processing.pop(request_id, None)
+        
+        # Metrics
+        duration = (request.updated_at - request.created_at).total_seconds()
+        track_request_completed(request.priority.name, request.status.value, duration)
+        FRONTDESK_REQUESTS_IN_QUEUE.labels(priority=request.priority.name).dec()
         
         # 更新声誉
         if self.mayor and request.user_id:
