@@ -1,0 +1,256 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "panels": [],
+      "title": "Keeper - Resource Management",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area"},
+      "title": "Registered Agents",
+      "type": "stat",
+      "targets": [{"expr": "sum(keeper_agents_registered)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "id": 3,
+      "options": {"colorMode": "value"},
+      "title": "Unhealthy Agents",
+      "type": "stat",
+      "targets": [{"expr": "keeper_agents_unhealthy", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "id": 4,
+      "options": {"colorMode": "value"},
+      "title": "Tasks Assigned (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(keeper_tasks_assigned_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "id": 5,
+      "options": {"colorMode": "value"},
+      "title": "Tasks Rejected (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(keeper_tasks_rejected_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 5},
+      "id": 6,
+      "title": "Agents by Role",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(keeper_agents_registered) by (role)", "legendFormat": "{{role}}", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 5},
+      "id": 7,
+      "title": "Assignment Latency (p95)",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(keeper_assignment_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "A"}]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 11},
+      "id": 10,
+      "title": "Mayor - Rules & Reputation",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 12},
+      "id": 11,
+      "options": {"colorMode": "value"},
+      "title": "Trusted Agents",
+      "type": "stat",
+      "targets": [{"expr": "mayor_agents_trusted", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 12},
+      "id": 12,
+      "options": {"colorMode": "value"},
+      "title": "Banned Agents",
+      "type": "stat",
+      "targets": [{"expr": "mayor_agents_banned", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 12},
+      "id": 13,
+      "options": {"colorMode": "value"},
+      "title": "Violations (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(mayor_rule_violations_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 12},
+      "id": 14,
+      "options": {"colorMode": "value"},
+      "title": "Rules Evaluated (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(mayor_rules_evaluated_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 12},
+      "id": 15,
+      "options": {"colorMode": "value"},
+      "title": "Proposals (total)",
+      "type": "stat",
+      "targets": [{"expr": "sum(mayor_proposals_total)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 12},
+      "id": 16,
+      "options": {"colorMode": "value"},
+      "title": "Votes Cast (total)",
+      "type": "stat",
+      "targets": [{"expr": "sum(mayor_votes_cast_total)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+      "id": 17,
+      "title": "Violations by Rule",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(mayor_rule_violations_total[5m])) by (rule_id)", "legendFormat": "{{rule_id}}", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+      "id": 18,
+      "title": "Reputation Distribution",
+      "type": "timeseries",
+      "targets": [{"expr": "avg(mayor_reputation_score)", "legendFormat": "avg", "refId": "A"}, {"expr": "min(mayor_reputation_score)", "legendFormat": "min", "refId": "B"}, {"expr": "max(mayor_reputation_score)", "legendFormat": "max", "refId": "C"}]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "id": 20,
+      "title": "FrontDesk - User Requests",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 23},
+      "id": 21,
+      "options": {"colorMode": "value"},
+      "title": "Active Sessions",
+      "type": "stat",
+      "targets": [{"expr": "frontdesk_sessions_active", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 23},
+      "id": 22,
+      "options": {"colorMode": "value"},
+      "title": "Requests in Queue",
+      "type": "stat",
+      "targets": [{"expr": "sum(frontdesk_requests_in_queue)", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 23},
+      "id": 23,
+      "options": {"colorMode": "value"},
+      "title": "Requests (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(frontdesk_requests_received_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 23},
+      "id": 24,
+      "options": {"colorMode": "value"},
+      "title": "Completed (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(frontdesk_requests_completed_total{status=\"completed\"}[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 23},
+      "id": 25,
+      "options": {"colorMode": "value"},
+      "title": "Failed (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(frontdesk_requests_completed_total{status=\"failed\"}[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 23},
+      "id": 26,
+      "options": {"colorMode": "value"},
+      "title": "Batch Ops (1h)",
+      "type": "stat",
+      "targets": [{"expr": "sum(increase(frontdesk_batch_operations_total[1h]))", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 27},
+      "id": 27,
+      "title": "Requests by Priority",
+      "type": "timeseries",
+      "targets": [{"expr": "sum(rate(frontdesk_requests_received_total[5m])) by (priority)", "legendFormat": "{{priority}}", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 27},
+      "id": 28,
+      "title": "Request Duration (p95)",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(frontdesk_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "A"}]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["curriculum-forge", "governance", "prometheus"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": true, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Curriculum-Forge Governance",
+  "uid": "curriculum-forge-governance",
+  "version": 1,
+  "weekStart": ""
+}
