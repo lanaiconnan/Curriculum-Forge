@@ -6,7 +6,7 @@ Gateway 请求验证器（Pydantic models）
 import re
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ── 通用辅助 ─────────────────────────────────────────────────────────
@@ -27,9 +27,10 @@ ROLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 class BaseValidator(BaseModel):
     """所有请求模型的基类：统一 JSON body 解析"""
 
-    class Config:
-        extra = "forbid"          # 默认禁止未知字段
-        anystr_strip_whitespace = True
+    model_config = ConfigDict(
+        extra="forbid",          # 默认禁止未知字段
+        str_strip_whitespace=True,
+    )
 
 
 # ── Jobs ─────────────────────────────────────────────────────────────
@@ -41,7 +42,8 @@ class JobCreateRequest(BaseValidator):
     config_overrides: Optional[Dict[str, Any]] = Field(None, description="运行时配置覆盖")
     description: Optional[str] = Field(None, max_length=512)
 
-    @validator("profile")
+    @field_validator("profile")
+    @classmethod
     def profile_name(cls, v):
         if v is not None:
             v = _strip(v)
@@ -51,28 +53,30 @@ class JobCreateRequest(BaseValidator):
                 raise ValueError("Invalid profile name format")
         return v
 
-    @validator("description")
+    @field_validator("description")
+    @classmethod
     def description_not_empty(cls, v):
         if v is not None and not v.strip():
             return None
         return v
 
-    @validator("proposal", always=True)
-    def proposal_or_profile(cls, v, values):
+    @field_validator("proposal")
+    @classmethod
+    def proposal_or_profile(cls, v, info):
         # 业务层校验：proposal 或 profile 至少有一个
-        if v is None and values.get("profile") is None:
+        if v is None and info.data.get("profile") is None:
             raise ValueError("Either 'profile' or 'proposal' is required")
         return v
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class BatchJobRequest(BaseValidator):
     """POST /jobs/batch — 批量创建任务"""
-    jobs: List[Dict[str, Any]] = Field(..., min_items=1, max_items=50)
+    jobs: List[Dict[str, Any]] = Field(..., min_length=1, max_length=50)
 
-    @validator("jobs")
+    @field_validator("jobs")
+    @classmethod
     def each_job_has_profile_or_proposal(cls, v):
         for i, job in enumerate(v):
             if "profile" not in job and "proposal" not in job:
@@ -82,15 +86,16 @@ class BatchJobRequest(BaseValidator):
 
 class JobConfigUpdateRequest(BaseValidator):
     """PATCH /jobs/{job_id}/config — 更新运行时配置"""
-    config_overrides: Dict[str, Any] = Field(..., min_items=1)
+    config_overrides: Dict[str, Any] = Field(..., min_length=1)
     merge_strategy: Optional[str] = Field("replace", description="replace | merge")
 
 
 class JobCompareRequest(BaseValidator):
     """POST /jobs/compare — 比较任务"""
-    job_ids: List[str] = Field(..., min_items=1, max_items=10)
+    job_ids: List[str] = Field(..., min_length=1, max_length=10)
 
-    @validator("job_ids")
+    @field_validator("job_ids")
+    @classmethod
     def unique_job_ids(cls, v):
         if len(v) != len(set(v)):
             raise ValueError("Duplicate job IDs in list")
@@ -125,15 +130,17 @@ class TemplateCreateRequest(BaseValidator):
     profile: str = Field(..., min_length=1, max_length=128)
     description: Optional[str] = Field(None, max_length=512)
     config_overrides: Optional[Dict[str, Any]] = None
-    tags: List[str] = Field(default_factory=list, max_items=20)
+    tags: List[str] = Field(default_factory=list, max_length=20)
 
-    @validator("tags")
+    @field_validator("tags")
+    @classmethod
     def unique_tags(cls, v):
         if len(v) != len(set(v)):
             raise ValueError("Duplicate tags")
         return list(set(v))
 
-    @validator("tags")
+    @field_validator("tags")
+    @classmethod
     def tag_format(cls, v):
         for tag in v:
             if not re.match(r"^[a-z0-9_-]{1,32}$", tag):
@@ -148,7 +155,8 @@ class TemplateUpdateRequest(BaseValidator):
     config_overrides: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
 
-    @validator("tags")
+    @field_validator("tags")
+    @classmethod
     def tag_format(cls, v):
         if v is None:
             return v
@@ -167,7 +175,8 @@ class RoleCreateRequest(BaseValidator):
     description: Optional[str] = Field(None, max_length=256)
     permissions: List[str] = Field(default_factory=list)
 
-    @validator("name")
+    @field_validator("name")
+    @classmethod
     def role_name_format(cls, v):
         v = _strip(v)
         if not ROLE_NAME_RE.match(v):
@@ -177,7 +186,8 @@ class RoleCreateRequest(BaseValidator):
             )
         return v
 
-    @validator("permissions")
+    @field_validator("permissions")
+    @classmethod
     def permissions_format(cls, v):
         for p in v:
             if not PERMISSION_RE.match(p):
@@ -193,9 +203,10 @@ class RoleUpdateRequest(BaseValidator):
 
 class RolePermissionRequest(BaseValidator):
     """POST|DELETE /roles/{name}/permissions"""
-    permissions: List[str] = Field(..., min_items=1)
+    permissions: List[str] = Field(..., min_length=1)
 
-    @validator("permissions")
+    @field_validator("permissions")
+    @classmethod
     def permissions_format(cls, v):
         for p in v:
             if not PERMISSION_RE.match(p):
@@ -213,7 +224,8 @@ class UserCreateRequest(BaseValidator):
     full_name: Optional[str] = Field(None, max_length=128)
     roles: List[str] = Field(default_factory=lambda: ["viewer"])
 
-    @validator("username")
+    @field_validator("username")
+    @classmethod
     def username_format(cls, v):
         v = _strip(v)
         if not re.match(r"^[a-z][a-z0-9_-]{1,62}$", v):
@@ -223,7 +235,8 @@ class UserCreateRequest(BaseValidator):
             )
         return v
 
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def email_format(cls, v):
         if v is None:
             return v
@@ -232,14 +245,16 @@ class UserCreateRequest(BaseValidator):
             raise ValueError("Invalid email format")
         return v
 
-    @validator("password")
+    @field_validator("password")
+    @classmethod
     def password_strength(cls, v):
         # 简单强度检查
         if len(v) < 6:
             raise ValueError("Password must be at least 6 characters")
         return v
 
-    @validator("roles")
+    @field_validator("roles")
+    @classmethod
     def roles_valid(cls, v):
         for r in v:
             if not ROLE_NAME_RE.match(r):
@@ -254,7 +269,8 @@ class UserUpdateRequest(BaseValidator):
     enabled: Optional[bool] = None
     roles: Optional[List[str]] = None
 
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def email_format(cls, v):
         if v is None:
             return v
@@ -263,7 +279,8 @@ class UserUpdateRequest(BaseValidator):
             raise ValueError("Invalid email format")
         return v
 
-    @validator("roles")
+    @field_validator("roles")
+    @classmethod
     def roles_valid(cls, v):
         if v is None:
             return v
@@ -278,7 +295,8 @@ class UserPasswordChangeRequest(BaseValidator):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=6, max_length=128)
 
-    @validator("new_password")
+    @field_validator("new_password")
+    @classmethod
     def password_strength(cls, v):
         if len(v) < 6:
             raise ValueError("New password must be at least 6 characters")
@@ -308,14 +326,14 @@ class APIKeyUpdateRequest(BaseValidator):
 class FeishuWebhookRequest(BaseValidator):
     """POST /webhooks/feishu — 飞书事件回调"""
     event: Dict[str, Any] = Field(...)
-    schema: Optional[str] = Field("2.0")  # 飞书事件订阅版本
+    schema_version: Optional[str] = Field("2.0", alias="schema")  # 飞书事件订阅版本
 
 
 # ── Config Overrides ─────────────────────────────────────────────────
 
 class ConfigOverrideRequest(BaseValidator):
     """PUT /config/overrides — 全局配置覆盖"""
-    config_overrides: Dict[str, Any] = Field(..., min_items=1)
+    config_overrides: Dict[str, Any] = Field(..., min_length=1)
     profile: Optional[str] = Field(None, max_length=128)
 
 
