@@ -385,3 +385,25 @@ class WorkflowCreateRequest(BaseModel):
     description: Optional[str] = ""
     tasks: List[Dict[str, Any]] = Field(default_factory=list)
 
+
+# ── Tenants ─────────────────────────────────────────────────────────────
+
+class CreateTenantRequest(BaseModel):
+    """POST /tenants — 创建租户"""
+    name: str = Field(..., min_length=1, max_length=128)
+    quota: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    trial_days: Optional[int] = Field(None, ge=1, le=365)
+
+
+class UpdateTenantRequest(BaseModel):
+    """PATCH /tenants/{id} — 更新租户"""
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
+    quota: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class SuspendTenantRequest(BaseModel):
+    """POST /tenants/{id}/suspend — 暂停租户"""
+    reason: Optional[str] = Field(None, max_length=256)
+

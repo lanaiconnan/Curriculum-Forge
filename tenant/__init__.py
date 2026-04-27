@@ -470,3 +470,13 @@ class TenantContext:
 def get_tenant_registry() -> TenantRegistry:
     """获取租户注册表实例"""
     return TenantRegistry()
+
+
+# ── Re-exports from middleware ───────────────────────────────────────────────
+
+from tenant.middleware import (
+    TenantMiddleware,
+    get_current_tenant,
+    require_tenant,
+    check_tenant_feature,
+)

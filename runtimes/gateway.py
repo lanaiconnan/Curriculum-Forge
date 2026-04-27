@@ -2640,6 +2640,158 @@ def create_app(
             "total": len(results),
         }
 
+    # ════════════════════════════════════════════════════════════════════════
+    # TENANT - Multi-tenancy Management
+    # ════════════════════════════════════════════════════════════════════════
+
+    from tenant import TenantRegistry, TenantQuota, TenantStatus
+    app.state.tenant_registry = TenantRegistry()
+
+    @app.get("/tenants", tags=["tenants"])
+    async def list_tenants(
+        request: Request,
+        status: Optional[str] = Query(None),
+        limit: int = Query(100, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+    ):
+        """List all tenants."""
+        registry = request.app.state.tenant_registry
+        status_enum = TenantStatus(status) if status else None
+        tenants = registry.list_tenants(status=status_enum, limit=limit, offset=offset)
+        return {
+            "tenants": [t.to_dict() for t in tenants],
+            "total": len(tenants),
+        }
+
+    @app.post("/tenants", tags=["tenants"], status_code=201)
+    async def create_tenant(
+        request: Request,
+        body: CreateTenantRequest = Depends(),
+    ):
+        """Create a new tenant."""
+        registry = request.app.state.tenant_registry
+        
+        quota = None
+        if body.quota:
+            quota = TenantQuota(
+                max_agents=body.quota.get("max_agents", 10),
+                max_jobs_per_day=body.quota.get("max_jobs_per_day", 1000),
+                max_concurrent_jobs=body.quota.get("max_concurrent_jobs", 10),
+                max_storage_mb=body.quota.get("max_storage_mb", 1024),
+                max_api_calls_per_hour=body.quota.get("max_api_calls_per_hour", 10000),
+                features=body.quota.get("features", ["basic"]),
+            )
+        
+        tenant = registry.create_tenant(
+            name=body.name,
+            quota=quota,
+            metadata=body.metadata,
+            trial_days=body.trial_days,
+        )
+        
+        logger.info(f"Created tenant: {tenant.tenant_id} ({tenant.name})")
+        return tenant.to_dict()
+
+    @app.get("/tenants/{tenant_id}", tags=["tenants"])
+    async def get_tenant(
+        tenant_id: str,
+        request: Request,
+    ):
+        """Get tenant by ID."""
+        registry = request.app.state.tenant_registry
+        tenant = registry.get_tenant(tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        return tenant.to_dict()
+
+    @app.patch("/tenants/{tenant_id}", tags=["tenants"])
+    async def update_tenant(
+        tenant_id: str,
+        request: Request,
+        body: UpdateTenantRequest = Depends(),
+    ):
+        """Update tenant."""
+        registry = request.app.state.tenant_registry
+        
+        quota = None
+        if body.quota:
+            quota = TenantQuota.from_dict(body.quota)
+        
+        tenant = registry.update_tenant(
+            tenant_id=tenant_id,
+            name=body.name,
+            quota=quota,
+            metadata=body.metadata,
+        )
+        
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        
+        return tenant.to_dict()
+
+    @app.delete("/tenants/{tenant_id}", tags=["tenants"])
+    async def delete_tenant(
+        tenant_id: str,
+        request: Request,
+    ):
+        """Delete tenant."""
+        registry = request.app.state.tenant_registry
+        if not registry.delete_tenant(tenant_id):
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        return {"deleted": True}
+
+    @app.post("/tenants/{tenant_id}/suspend", tags=["tenants"])
+    async def suspend_tenant(
+        tenant_id: str,
+        request: Request,
+        body: SuspendTenantRequest = Depends(),
+    ):
+        """Suspend tenant."""
+        registry = request.app.state.tenant_registry
+        if not registry.suspend_tenant(tenant_id, reason=body.reason or ""):
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        tenant = registry.get_tenant(tenant_id)
+        return tenant.to_dict()
+
+    @app.post("/tenants/{tenant_id}/activate", tags=["tenants"])
+    async def activate_tenant(
+        tenant_id: str,
+        request: Request,
+    ):
+        """Activate tenant."""
+        registry = request.app.state.tenant_registry
+        if not registry.activate_tenant(tenant_id):
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        tenant = registry.get_tenant(tenant_id)
+        return tenant.to_dict()
+
+    @app.get("/tenants/{tenant_id}/usage", tags=["tenants"])
+    async def get_tenant_usage(
+        tenant_id: str,
+        request: Request,
+    ):
+        """Get tenant usage statistics."""
+        registry = request.app.state.tenant_registry
+        tenant = registry.get_tenant(tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        return {
+            "tenant_id": tenant_id,
+            "quota": tenant.quota.to_dict(),
+            "usage": tenant.usage.to_dict(),
+            "limits_reached": {
+                "jobs_per_day": tenant.usage.jobs_today >= tenant.quota.max_jobs_per_day,
+                "concurrent_jobs": tenant.usage.concurrent_jobs >= tenant.quota.max_concurrent_jobs,
+                "api_calls_per_hour": tenant.usage.api_calls_this_hour >= tenant.quota.max_api_calls_per_hour,
+            },
+        }
+
+    @app.get("/tenants/stats", tags=["tenants"])
+    async def get_tenants_stats(request: Request):
+        """Get global tenant statistics."""
+        registry = request.app.state.tenant_registry
+        return registry.get_stats()
+
     # ACP - Agent Control Protocol
     # ════════════════════════════════════════════════════════════════════════
 
