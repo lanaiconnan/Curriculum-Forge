@@ -52,6 +52,30 @@ class PluginHook(Enum):
     # Stage lifecycle
     STAGE_BEFORE_TRANSITION = "stage:before_transition"
     STAGE_AFTER_TRANSITION = "stage:after_transition"
+    
+    # Governance lifecycle (Phase 7.1)
+    GOVERNANCE_AGENT_REGISTERED = "governance:agent_registered"
+    GOVERNANCE_AGENT_UNREGISTERED = "governance:agent_unregistered"
+    GOVERNANCE_TASK_ASSIGNED = "governance:task_assigned"
+    GOVERNANCE_TASK_COMPLETED = "governance:task_completed"
+    GOVERNANCE_REPUTATION_CHANGED = "governance:reputation_changed"
+    GOVERNANCE_QUOTA_EXCEEDED = "governance:quota_exceeded"
+    GOVERNANCE_RULE_VIOLATION = "governance:rule_violation"
+    GOVERNANCE_PROPOSAL_CREATED = "governance:proposal_created"
+    GOVERNANCE_PROPOSAL_CLOSED = "governance:proposal_closed"
+    
+    # Knowledge lifecycle (Phase 7.1)
+    KNOWLEDGE_EXPERIENCE_STORED = "knowledge:experience_stored"
+    KNOWLEDGE_EXPERIENCE_RETRIEVED = "knowledge:experience_retrieved"
+    KNOWLEDGE_PAGE_CREATED = "knowledge:page_created"
+    KNOWLEDGE_PAGE_UPDATED = "knowledge:page_updated"
+    KNOWLEDGE_PAGE_DELETED = "knowledge:page_deleted"
+    
+    # Tenant lifecycle (Phase 7.1)
+    TENANT_CREATED = "tenant:created"
+    TENANT_UPDATED = "tenant:updated"
+    TENANT_SUSPENDED = "tenant:suspended"
+    TENANT_QUOTA_CHECK = "tenant:quota_check"
 
 
 @dataclass
