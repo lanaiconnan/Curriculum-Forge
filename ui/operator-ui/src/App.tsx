@@ -5,12 +5,18 @@ import {
   listPlugins, enablePlugin, disablePlugin, updatePluginConfig,
   getAuditLogs, getAuditStats, getStats, getStatsTimeseries,
   compareJobs,
+  listMemoryPages, getMemoryPage, createMemoryPage, searchMemory,
+  getMemoryStats, getMemoryGraph, deleteMemoryPage,
+  listAgents, listRules, listProposals, listRequests, getGovernanceStats,
+  listTenants, createTenant, suspendTenant, activateTenant, deleteTenant, getTenantUsage, getTenantStats,
+  listUsers, createUser, deleteUser, listAPIKeys, createAPIKey, deleteAPIKey, listRoles,
   type Job, type Profile, type StatsBucket, type CompareResult,
+  type MemoryPage, type MemoryStats, type SearchResult, type GraphData,
 } from './api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'jobs' | 'plugins' | 'audit' | 'config' | 'compare';
+type Tab = 'jobs' | 'knowledge' | 'governance' | 'tenants' | 'auth' | 'plugins' | 'audit' | 'config' | 'compare';
 
 interface Plugin {
   name: string;
@@ -1007,6 +1013,1102 @@ function CompareTab() {
   );
 }
 
+// ── Knowledge Tab ──────────────────────────────────────────────────────────────
+
+function KnowledgeTab() {
+  const [pages, setPages] = useState<string[]>([]);
+  const [selectedPage, setSelectedPage] = useState<MemoryPage | null>(null);
+  const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [graph, setGraph] = useState<GraphData | null>(null);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showGraph, setShowGraph] = useState(false);
+
+  const loadData = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const [pageList, st] = await Promise.all([listMemoryPages(), getMemoryStats()]);
+      setPages(pageList);
+      setStats(st);
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const selectPage = async (title: string) => {
+    try {
+      const page = await getMemoryPage(title);
+      setSelectedPage(page);
+    } catch (e) { setError(String(e)); }
+  };
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    try {
+      const results = await searchMemory(searchQuery);
+      setSearchResults(results);
+      setShowSearch(true);
+    } catch (e) { setError(String(e)); }
+  };
+
+  const handleShowGraph = async () => {
+    try {
+      const g = await getMemoryGraph();
+      setGraph(g);
+      setShowGraph(true);
+    } catch (e) { setError(String(e)); }
+  };
+
+  const handleCreatePage = async (title: string, content: string, tags: string[]) => {
+    try {
+      await createMemoryPage({ title, content, tags });
+      setShowCreate(false);
+      await loadData();
+      await selectPage(title);
+    } catch (e) { setError(String(e)); }
+  };
+
+  const handleDeletePage = async (title: string) => {
+    try {
+      await deleteMemoryPage(title);
+      if (selectedPage?.title === title) setSelectedPage(null);
+      await loadData();
+    } catch (e) { setError(String(e)); }
+  };
+
+  if (loading) return <LoadingSpinner msg="Loading knowledge base…" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-medium">Knowledge Base</h2>
+        <div className="flex gap-2">
+          <button onClick={() => setShowSearch(!showSearch)} className="btn-secondary text-sm">
+            {showSearch ? 'Hide Search' : '🔍 Search'}
+          </button>
+          <button onClick={handleShowGraph} className="btn-secondary text-sm">
+            🔗 Graph
+          </button>
+          <button onClick={() => setShowCreate(true)} className="btn-primary text-sm">
+            + New Page
+          </button>
+        </div>
+      </div>
+
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-indigo-400">{stats.total_pages}</div>
+            <div className="text-xs text-gray-500">Pages</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-blue-400">{stats.total_links}</div>
+            <div className="text-xs text-gray-500">Links</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-purple-400">{stats.total_tags}</div>
+            <div className="text-xs text-gray-500">Tags</div>
+          </div>
+        </div>
+      )}
+
+      {/* Search */}
+      {showSearch && (
+        <div className="card p-4">
+          <div className="flex gap-2 mb-3">
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              placeholder="Search knowledge base…"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:border-indigo-500 outline-none"
+            />
+            <button onClick={handleSearch} className="btn-primary text-sm">Search</button>
+          </div>
+          {searchResults.length > 0 && (
+            <div className="space-y-2">
+              {searchResults.map(r => (
+                <div
+                  key={r.title}
+                  onClick={() => selectPage(r.title)}
+                  className="p-2 rounded hover:bg-gray-800/50 cursor-pointer border border-gray-800"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm text-indigo-300">{r.title}</span>
+                    <span className="text-xs text-gray-500">score: {r.score.toFixed(2)}</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1 line-clamp-2">{r.snippet}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Graph Modal */}
+      {showGraph && graph && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="card p-6 w-full max-w-2xl max-h-[80vh] overflow-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Knowledge Graph</h3>
+              <button onClick={() => setShowGraph(false)} className="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <div className="text-xs text-gray-400 mb-3">
+              {graph.nodes.length} nodes · {graph.edges.length} edges
+            </div>
+            {/* Simple ASCII-style graph rendering */}
+            <div className="bg-black/50 border border-gray-800 rounded p-4 font-mono text-xs space-y-1 max-h-96 overflow-auto">
+              {graph.nodes.map(n => (
+                <div key={n.id} className="flex items-center gap-2">
+                  <span className="text-indigo-400">●</span>
+                  <span className="text-gray-200">{n.label || n.id}</span>
+                  {graph.edges.filter(e => e.source === n.id).map(e => {
+                    const target = graph.nodes.find(nn => nn.id === e.target);
+                    return (
+                      <span key={e.target} className="text-gray-500">
+                        → <span className="text-blue-400">{target?.label || e.target}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Content: Page list + Detail view */}
+      <div className="flex gap-4">
+        {/* Page list */}
+        <div className="w-56 shrink-0">
+          <div className="space-y-1 max-h-[60vh] overflow-y-auto">
+            {pages.map(title => (
+              <div
+                key={title}
+                onClick={() => selectPage(title)}
+                className={`px-3 py-2 rounded text-sm cursor-pointer transition-colors flex items-center justify-between group ${
+                  selectedPage?.title === title
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <span className="truncate">{title}</span>
+                <button
+                  onClick={e => { e.stopPropagation(); handleDeletePage(title); }}
+                  className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 text-xs ml-1"
+                >×</button>
+              </div>
+            ))}
+            {pages.length === 0 && (
+              <p className="text-gray-500 text-sm text-center py-4">No pages yet</p>
+            )}
+          </div>
+        </div>
+
+        {/* Page detail */}
+        <div className="flex-1 min-w-0">
+          {!selectedPage ? (
+            <div className="card p-8 text-center text-gray-500">
+              <p className="text-lg mb-2">📚 Select a page to view</p>
+              <p className="text-sm">Or create a new one with the + New Page button</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="card p-4">
+                <h3 className="text-lg font-semibold text-indigo-300 mb-2">{selectedPage.title}</h3>
+                <div className="flex gap-2 mb-3">
+                  {selectedPage.tags?.map(t => (
+                    <span key={t} className="badge badge-pending text-xs">{t}</span>
+                  ))}
+                </div>
+                <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans leading-relaxed">
+                  {selectedPage.content}
+                </pre>
+              </div>
+              {selectedPage.links && selectedPage.links.length > 0 && (
+                <div className="card p-3">
+                  <h4 className="text-xs text-gray-500 mb-2">Linked Pages</h4>
+                  <div className="flex flex-wrap gap-1">
+                    {selectedPage.links.map(link => (
+                      <button
+                        key={link}
+                        onClick={() => selectPage(link)}
+                        className="text-xs bg-blue-900/30 text-blue-400 px-2 py-1 rounded hover:bg-blue-900/50"
+                      >
+                        [[{link}]]
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Create Page Modal */}
+      {showCreate && (
+        <CreatePageModal
+          onClose={() => setShowCreate(false)}
+          onCreate={handleCreatePage}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreatePageModal({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void;
+  onCreate: (title: string, content: string, tags: string[]) => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [tags, setTags] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) { setError('Title is required'); return; }
+    setLoading(true); setError('');
+    try {
+      await onCreate(title.trim(), content, tags.split(',').map(t => t.trim()).filter(Boolean));
+    } catch (err) { setError(String(err)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="card p-6 w-full max-w-lg">
+        <h2 className="text-xl font-semibold mb-4">Create Knowledge Page</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Title</label>
+            <input
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Page title"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Content (Markdown)</label>
+            <textarea
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              rows={8}
+              placeholder="Write content here… Use [[wikilinks]] to link pages."
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none resize-y font-mono text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Tags (comma-separated)</label>
+            <input
+              value={tags}
+              onChange={e => setTags(e.target.value)}
+              placeholder="tag1, tag2, tag3"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none"
+            />
+          </div>
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+          <div className="flex gap-3 pt-2">
+            <button type="submit" disabled={loading} className="btn-primary flex-1">
+              {loading ? 'Creating…' : 'Create Page'}
+            </button>
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Governance Tab ────────────────────────────────────────────────────────────
+
+function GovernanceTab() {
+  const [agents, setAgents] = useState<import('./api').AgentInfo[]>([]);
+  const [rules, setRules] = useState<import('./api').RuleInfo[]>([]);
+  const [proposals, setProposals] = useState<import('./api').ProposalInfo[]>([]);
+  const [requests, setRequests] = useState<import('./api').RequestInfo[]>([]);
+  const [stats, setStats] = useState<import('./api').GovernanceStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [section, setSection] = useState<'agents' | 'rules' | 'proposals' | 'requests'>('agents');
+
+  const loadData = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const [a, r, p, req, st] = await Promise.all([
+        listAgents().catch(() => []),
+        listRules().catch(() => []),
+        listProposals().catch(() => []),
+        listRequests().catch(() => []),
+        getGovernanceStats().catch(() => null),
+      ]);
+      setAgents(a); setRules(r); setProposals(p); setRequests(req); setStats(st);
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  if (loading) return <LoadingSpinner msg="Loading governance…" />;
+
+  const sections = [
+    { key: 'agents' as const, label: `Agents (${agents.length})` },
+    { key: 'rules' as const, label: `Rules (${rules.length})` },
+    { key: 'proposals' as const, label: `Proposals (${proposals.length})` },
+    { key: 'requests' as const, label: `Requests (${requests.length})` },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-medium">Governance</h2>
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-indigo-400">{stats.agents.active}/{stats.agents.total}</div>
+            <div className="text-xs text-gray-500">Active Agents</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-green-400">{stats.rules.enabled}/{stats.rules.total}</div>
+            <div className="text-xs text-gray-500">Active Rules</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-yellow-400">{stats.proposals.open}</div>
+            <div className="text-xs text-gray-500">Open Proposals</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-blue-400">{stats.requests.pending}</div>
+            <div className="text-xs text-gray-500">Pending Requests</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-purple-400">{stats.reputation.avg?.toFixed(1) ?? '-'}</div>
+            <div className="text-xs text-gray-500">Avg Reputation</div>
+          </div>
+        </div>
+      )}
+
+      {/* Section tabs */}
+      <div className="flex gap-1 border-b border-gray-800">
+        {sections.map(s => (
+          <button
+            key={s.key}
+            onClick={() => setSection(s.key)}
+            className={`px-4 py-2 text-sm border-b-2 transition-colors ${
+              section === s.key
+                ? 'border-indigo-500 text-indigo-400'
+                : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Agents */}
+      {section === 'agents' && (
+        <div className="card overflow-hidden">
+          {agents.length === 0 ? (
+            <p className="p-4 text-gray-500 text-sm text-center">No agents registered</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-left text-gray-500 text-xs">
+                  <th className="px-4 py-2 font-medium">Name</th>
+                  <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium">Capabilities</th>
+                  <th className="px-4 py-2 font-medium">Registered</th>
+                </tr>
+              </thead>
+              <tbody>
+                {agents.map(a => (
+                  <tr key={a.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="px-4 py-3 font-mono text-indigo-300">{a.name}</td>
+                    <td className="px-4 py-3">
+                      <span className={`badge ${a.status === 'active' ? 'badge-completed' : 'badge-pending'}`}>
+                        {a.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-400 text-xs">{a.capabilities?.join(', ') || '-'}</td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{timeAgo(a.registered_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* Rules */}
+      {section === 'rules' && (
+        <div className="space-y-2">
+          {rules.length === 0 ? (
+            <p className="text-gray-500 text-sm text-center py-8">No rules defined</p>
+          ) : rules.map(r => (
+            <div key={r.id} className="card p-4 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-indigo-300">{r.name}</span>
+                  <span className={`badge ${r.enabled ? 'badge-completed' : 'badge-pending'}`}>
+                    {r.enabled ? 'enabled' : 'disabled'}
+                  </span>
+                  <span className="text-xs text-gray-600">priority: {r.priority}</span>
+                </div>
+                {r.description && <p className="text-xs text-gray-400 mt-1">{r.description}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Proposals */}
+      {section === 'proposals' && (
+        <div className="space-y-2">
+          {proposals.length === 0 ? (
+            <p className="text-gray-500 text-sm text-center py-8">No proposals</p>
+          ) : proposals.map(p => (
+            <div key={p.id} className="card p-4">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-indigo-300">{p.title}</span>
+                <span className={`badge ${
+                  p.status === 'passed' ? 'badge-completed' :
+                  p.status === 'rejected' ? 'badge-failed' :
+                  p.status === 'open' ? 'badge-running' : 'badge-pending'
+                }`}>{p.status}</span>
+              </div>
+              <div className="flex gap-4 mt-2 text-xs text-gray-400">
+                <span>👍 {p.votes_for}</span>
+                <span>👎 {p.votes_against}</span>
+                <span>{timeAgo(p.created_at)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Requests */}
+      {section === 'requests' && (
+        <div className="card overflow-hidden">
+          {requests.length === 0 ? (
+            <p className="p-4 text-gray-500 text-sm text-center">No requests</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-left text-gray-500 text-xs">
+                  <th className="px-4 py-2 font-medium">ID</th>
+                  <th className="px-4 py-2 font-medium">User</th>
+                  <th className="px-4 py-2 font-medium">Type</th>
+                  <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {requests.map(r => (
+                  <tr key={r.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="px-4 py-3 font-mono text-xs text-indigo-300">{r.id.slice(0, 8)}</td>
+                    <td className="px-4 py-3 text-gray-400 text-xs">{r.user_id}</td>
+                    <td className="px-4 py-3 text-gray-300 text-xs">{r.type}</td>
+                    <td className="px-4 py-3">
+                      <span className={`badge ${
+                        r.status === 'completed' ? 'badge-completed' :
+                        r.status === 'failed' ? 'badge-failed' :
+                        r.status === 'pending' ? 'badge-waiting' : 'badge-running'
+                      }`}>{r.status}</span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{timeAgo(r.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Tenants Tab ──────────────────────────────────────────────────────────────
+
+function TenantsTab() {
+  const [tenants, setTenants] = useState<import('./api').Tenant[]>([]);
+  const [stats, setStats] = useState<import('./api').TenantStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [selectedTenant, setSelectedTenant] = useState<string | null>(null);
+  const [usage, setUsage] = useState<import('./api').TenantUsage | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const [t, st] = await Promise.all([listTenants(), getTenantStats()]);
+      setTenants(t); setStats(st);
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleSuspend = async (id: string) => {
+    try { await suspendTenant(id); await loadData(); }
+    catch (e) { setError(String(e)); }
+  };
+
+  const handleActivate = async (id: string) => {
+    try { await activateTenant(id); await loadData(); }
+    catch (e) { setError(String(e)); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this tenant?')) return;
+    try { await deleteTenant(id); await loadData(); }
+    catch (e) { setError(String(e)); }
+  };
+
+  const handleShowUsage = async (id: string) => {
+    try {
+      const u = await getTenantUsage(id);
+      setUsage(u); setSelectedTenant(id);
+    } catch (e) { setError(String(e)); }
+  };
+
+  const handleCreateTenant = async (name: string, plan: string) => {
+    try {
+      await createTenant({ name, plan: plan || undefined });
+      setShowCreate(false);
+      await loadData();
+    } catch (e) { setError(String(e)); }
+  };
+
+  if (loading) return <LoadingSpinner msg="Loading tenants…" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-medium">Tenants</h2>
+        <button onClick={() => setShowCreate(true)} className="btn-primary text-sm">
+          + New Tenant
+        </button>
+      </div>
+
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-indigo-400">{stats.total_tenants}</div>
+            <div className="text-xs text-gray-500">Total</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-green-400">{stats.active_tenants}</div>
+            <div className="text-xs text-gray-500">Active</div>
+          </div>
+          <div className="bg-gray-900 rounded p-3 border border-gray-800 text-center">
+            <div className="text-2xl font-bold text-red-400">{stats.suspended_tenants}</div>
+            <div className="text-xs text-gray-500">Suspended</div>
+          </div>
+        </div>
+      )}
+
+      {/* Tenant list */}
+      <div className="space-y-2">
+        {tenants.length === 0 ? (
+          <p className="text-gray-500 text-sm text-center py-8">No tenants yet</p>
+        ) : tenants.map(t => (
+          <div key={t.id} className="card p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-indigo-300">{t.name}</span>
+                  <span className="font-mono text-xs text-gray-500">{t.id.slice(0, 8)}</span>
+                  <span className={`badge ${t.status === 'active' ? 'badge-completed' : 'badge-failed'}`}>
+                    {t.status}
+                  </span>
+                  <span className="badge badge-pending">{t.plan}</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Created {timeAgo(t.created_at)}</p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => handleShowUsage(t.id)} className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded">
+                  Usage
+                </button>
+                {t.status === 'active' ? (
+                  <button onClick={() => handleSuspend(t.id)} className="text-xs bg-yellow-600/20 text-yellow-400 hover:bg-yellow-600/40 px-3 py-1 rounded">
+                    Suspend
+                  </button>
+                ) : (
+                  <button onClick={() => handleActivate(t.id)} className="text-xs bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/40 px-3 py-1 rounded">
+                    Activate
+                  </button>
+                )}
+                <button onClick={() => handleDelete(t.id)} className="text-xs bg-red-600/20 text-red-400 hover:bg-red-600/40 px-3 py-1 rounded">
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Usage Modal */}
+      {selectedTenant && usage && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="card p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Tenant Usage</h3>
+              <button onClick={() => { setSelectedTenant(null); setUsage(null); }} className="text-gray-400 hover:text-white">✕</button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-gray-800 rounded p-3 text-center">
+                <div className="text-xl font-bold text-indigo-400">{usage.jobs_count}</div>
+                <div className="text-xs text-gray-500">Jobs</div>
+              </div>
+              <div className="bg-gray-800 rounded p-3 text-center">
+                <div className="text-xl font-bold text-blue-400">{usage.storage_mb.toFixed(1)}</div>
+                <div className="text-xs text-gray-500">Storage MB</div>
+              </div>
+              <div className="bg-gray-800 rounded p-3 text-center">
+                <div className="text-xl font-bold text-green-400">{usage.api_calls}</div>
+                <div className="text-xs text-gray-500">API Calls</div>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mt-3 text-center">Period: {usage.period}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Create Tenant Modal */}
+      {showCreate && (
+        <CreateTenantModal
+          onClose={() => setShowCreate(false)}
+          onCreate={handleCreateTenant}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateTenantModal({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void;
+  onCreate: (name: string, plan: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [plan, setPlan] = useState('free');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) { setError('Name is required'); return; }
+    setLoading(true); setError('');
+    try { await onCreate(name.trim(), plan); }
+    catch (err) { setError(String(err)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="card p-6 w-full max-w-md">
+        <h2 className="text-xl font-semibold mb-4">Create Tenant</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Name</label>
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Organization name"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Plan</label>
+            <select value={plan} onChange={e => setPlan(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none"
+            >
+              <option value="free">Free</option>
+              <option value="pro">Pro</option>
+              <option value="enterprise">Enterprise</option>
+            </select>
+          </div>
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+          <div className="flex gap-3 pt-2">
+            <button type="submit" disabled={loading} className="btn-primary flex-1">
+              {loading ? 'Creating…' : 'Create Tenant'}
+            </button>
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Auth Tab ────────────────────────────────────────────────────────────────
+
+function AuthTab() {
+  const [users, setUsers] = useState<import('./api').User[]>([]);
+  const [apiKeys, setApiKeys] = useState<import('./api').APIKey[]>([]);
+  const [roles, setRoles] = useState<import('./api').Role[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [section, setSection] = useState<'users' | 'keys' | 'roles'>('users');
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [showCreateKey, setShowCreateKey] = useState(false);
+  const [newKeyDisplay, setNewKeyDisplay] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const [u, k, r] = await Promise.all([
+        listUsers().catch(() => []),
+        listAPIKeys().catch(() => []),
+        listRoles().catch(() => []),
+      ]);
+      setUsers(u); setApiKeys(k); setRoles(r);
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleDeleteUser = async (id: string) => {
+    if (!confirm('Delete this user?')) return;
+    try { await deleteUser(id); await loadData(); }
+    catch (e) { setError(String(e)); }
+  };
+
+  const handleDeleteKey = async (id: string) => {
+    try { await deleteAPIKey(id); await loadData(); }
+    catch (e) { setError(String(e)); }
+  };
+
+  const handleCreateUser = async (username: string, password: string, role: string) => {
+    try {
+      await createUser({ username, password, role: role || undefined });
+      setShowCreateUser(false);
+      await loadData();
+    } catch (e) { setError(String(e)); }
+  };
+
+  const handleCreateKey = async (name: string, scopes: string) => {
+    try {
+      const result = await createAPIKey({
+        name,
+        scopes: scopes ? scopes.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+      });
+      setShowCreateKey(false);
+      setNewKeyDisplay(result.key);
+      await loadData();
+    } catch (e) { setError(String(e)); }
+  };
+
+  if (loading) return <LoadingSpinner msg="Loading auth…" />;
+
+  const sections = [
+    { key: 'users' as const, label: `Users (${users.length})` },
+    { key: 'keys' as const, label: `API Keys (${apiKeys.length})` },
+    { key: 'roles' as const, label: `Roles (${roles.length})` },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-medium">Auth & Access</h2>
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+
+      {/* Section tabs */}
+      <div className="flex gap-1 border-b border-gray-800">
+        {sections.map(s => (
+          <button
+            key={s.key}
+            onClick={() => setSection(s.key)}
+            className={`px-4 py-2 text-sm border-b-2 transition-colors ${
+              section === s.key
+                ? 'border-indigo-500 text-indigo-400'
+                : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+        {section === 'users' && (
+          <button onClick={() => setShowCreateUser(true)} className="ml-auto btn-primary text-sm">
+            + New User
+          </button>
+        )}
+        {section === 'keys' && (
+          <button onClick={() => setShowCreateKey(true)} className="ml-auto btn-primary text-sm">
+            + New Key
+          </button>
+        )}
+      </div>
+
+      {/* Users */}
+      {section === 'users' && (
+        <div className="card overflow-hidden">
+          {users.length === 0 ? (
+            <p className="p-4 text-gray-500 text-sm text-center">No users</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-left text-gray-500 text-xs">
+                  <th className="px-4 py-2 font-medium">Username</th>
+                  <th className="px-4 py-2 font-medium">Role</th>
+                  <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium">Last Login</th>
+                  <th className="px-4 py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(u => (
+                  <tr key={u.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="px-4 py-3 font-mono text-indigo-300">{u.username}</td>
+                    <td className="px-4 py-3"><span className="badge badge-pending">{u.role}</span></td>
+                    <td className="px-4 py-3">
+                      <span className={`badge ${u.active ? 'badge-completed' : 'badge-failed'}`}>
+                        {u.active ? 'active' : 'locked'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{u.last_login ? timeAgo(u.last_login) : 'never'}</td>
+                    <td className="px-4 py-3">
+                      <button onClick={() => handleDeleteUser(u.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* API Keys */}
+      {section === 'keys' && (
+        <div className="card overflow-hidden">
+          {apiKeys.length === 0 ? (
+            <p className="p-4 text-gray-500 text-sm text-center">No API keys</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-left text-gray-500 text-xs">
+                  <th className="px-4 py-2 font-medium">Name</th>
+                  <th className="px-4 py-2 font-medium">Client ID</th>
+                  <th className="px-4 py-2 font-medium">Scopes</th>
+                  <th className="px-4 py-2 font-medium">Last Used</th>
+                  <th className="px-4 py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {apiKeys.map(k => (
+                  <tr key={k.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="px-4 py-3 text-indigo-300">{k.name}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-400">{k.client_id}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {k.scopes?.map(s => (
+                          <span key={s} className="badge badge-pending text-xs">{s}</span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{k.last_used ? timeAgo(k.last_used) : 'never'}</td>
+                    <td className="px-4 py-3">
+                      <button onClick={() => handleDeleteKey(k.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* New Key Display */}
+      {newKeyDisplay && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="card p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-2">API Key Created</h3>
+            <p className="text-sm text-yellow-400 mb-3">⚠️ Copy this key now. It won't be shown again.</p>
+            <div className="bg-black/50 border border-gray-700 rounded p-3 font-mono text-xs text-green-400 break-all">
+              {newKeyDisplay}
+            </div>
+            <button
+              onClick={() => setNewKeyDisplay(null)}
+              className="btn-primary w-full mt-4"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Roles */}
+      {section === 'roles' && (
+        <div className="space-y-2">
+          {roles.length === 0 ? (
+            <p className="text-gray-500 text-sm text-center py-8">No roles defined</p>
+          ) : roles.map(r => (
+            <div key={r.name} className="card p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="font-medium text-indigo-300">{r.name}</span>
+              </div>
+              {r.description && <p className="text-xs text-gray-400 mb-2">{r.description}</p>}
+              <div className="flex flex-wrap gap-1">
+                {r.permissions?.map(p => (
+                  <span key={p} className="badge badge-pending text-xs">{p}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Create User Modal */}
+      {showCreateUser && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="card p-6 w-full max-w-md">
+            <h2 className="text-xl font-semibold mb-4">Create User</h2>
+            <CreateUserForm
+              onSubmit={handleCreateUser}
+              onCancel={() => setShowCreateUser(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Create API Key Modal */}
+      {showCreateKey && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="card p-6 w-full max-w-md">
+            <h2 className="text-xl font-semibold mb-4">Create API Key</h2>
+            <CreateAPIKeyForm
+              onSubmit={handleCreateKey}
+              onCancel={() => setShowCreateKey(false)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CreateUserForm({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (username: string, password: string, role: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('viewer');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !password) { setError('Username and password required'); return; }
+    setLoading(true); setError('');
+    try { await onSubmit(username.trim(), password, role); }
+    catch (err) { setError(String(err)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Username</label>
+        <input value={username} onChange={e => setUsername(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none" />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Password</label>
+        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none" />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Role</label>
+        <select value={role} onChange={e => setRole(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none"
+        >
+          <option value="admin">Admin</option>
+          <option value="operator">Operator</option>
+          <option value="viewer">Viewer</option>
+        </select>
+      </div>
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      <div className="flex gap-3 pt-2">
+        <button type="submit" disabled={loading} className="btn-primary flex-1">
+          {loading ? 'Creating…' : 'Create User'}
+        </button>
+        <button type="button" onClick={onCancel} className="btn-secondary">Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function CreateAPIKeyForm({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (name: string, scopes: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [scopes, setScopes] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) { setError('Name is required'); return; }
+    setLoading(true); setError('');
+    try { await onSubmit(name.trim(), scopes); }
+    catch (err) { setError(String(err)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Key Name</label>
+        <input value={name} onChange={e => setName(e.target.value)}
+          placeholder="e.g. ci-pipeline"
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none" />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">Scopes (comma-separated)</label>
+        <input value={scopes} onChange={e => setScopes(e.target.value)}
+          placeholder="jobs.read, jobs.write"
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 focus:border-indigo-500 outline-none" />
+      </div>
+      {error && <p className="text-red-400 text-sm">{error}</p>}
+      <div className="flex gap-3 pt-2">
+        <button type="submit" disabled={loading} className="btn-primary flex-1">
+          {loading ? 'Creating…' : 'Create Key'}
+        </button>
+        <button type="button" onClick={onCancel} className="btn-secondary">Cancel</button>
+      </div>
+    </form>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1076,6 +2178,10 @@ export default function App() {
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'jobs', label: 'Jobs' },
+    { key: 'knowledge', label: 'Knowledge' },
+    { key: 'governance', label: 'Governance' },
+    { key: 'tenants', label: 'Tenants' },
+    { key: 'auth', label: 'Auth' },
     { key: 'compare', label: 'Compare' },
     { key: 'plugins', label: 'Plugins' },
     { key: 'audit', label: 'Audit' },
@@ -1160,6 +2266,10 @@ export default function App() {
         {tab === 'audit' && <AuditTab />}
         {tab === 'config' && <ConfigTab />}
         {tab === 'compare' && <CompareTab />}
+        {tab === 'knowledge' && <KnowledgeTab />}
+        {tab === 'governance' && <GovernanceTab />}
+        {tab === 'tenants' && <TenantsTab />}
+        {tab === 'auth' && <AuthTab />}
       </main>
 
       {/* Create modal */}
