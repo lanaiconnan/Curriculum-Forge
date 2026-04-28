@@ -1828,6 +1828,28 @@ def create_app(
             "initialized": plugin.is_initialized,
         }
 
+    @app.get("/plugins/{name}/status", tags=["plugins"])
+    async def get_plugin_status(name: str):
+        """Get plugin runtime status and statistics."""
+        pm = app.state.plugin_manager
+        plugin = pm.get_plugin(name)
+        if plugin is None:
+            raise HTTPException(status_code=404, detail=f"Plugin '{name}' not found")
+        
+        # Try to get stats from plugin instance
+        stats = None
+        if hasattr(plugin._handler, '__self__') and hasattr(plugin._handler.__self__, 'get_stats'):
+            stats = plugin._handler.__self__.get_stats()
+        
+        return {
+            "name": plugin.meta.name,
+            "version": plugin.meta.version,
+            "initialized": plugin.is_initialized,
+            "hooks_registered": [h.value for h in plugin.meta.hooks],
+            "priority": plugin.meta.priority,
+            "stats": stats,
+        }
+
     @app.post("/plugins/{name}/enable", tags=["plugins"])
     async def enable_plugin(name: str):
         """Enable a disabled plugin."""
